@@ -116,7 +116,7 @@ const PLATFORM_API_BASE = `${BASE_URL}/api/platform/v1`;
 
 /**
  * Thin fetch wrapper for the platform v1 API.
- * @param {"GET"|"POST"|"DELETE"} method
+ * @param {"GET"|"POST"|"PATCH"|"DELETE"} method
  * @param {string} path - path under /api/platform/v1, e.g. "/oauth-clients" or "/keys/abc"
  * @param {unknown} [body]
  * @returns {Promise<{ok: boolean, status: number, data: unknown}>}
@@ -154,7 +154,7 @@ async function platformApiRequest(method, path, body) {
 /**
  * Calls platformApiRequest and throws a ToolError with a readable message
  * if the response was not ok.
- * @param {"GET"|"POST"|"DELETE"} method
+ * @param {"GET"|"POST"|"PATCH"|"DELETE"} method
  * @param {string} path
  * @param {unknown} [body]
  */
@@ -644,22 +644,204 @@ server.tool(
 );
 
 server.tool(
+  "app_create",
+  "Create a new App: a user-owned workspace entity (name, tag, color) that keys, databases, files, links, " +
+    "and pages can be attributed to. Requires a master shb_ key.",
+  {
+    name: z.string().min(1).max(60).describe("App display name"),
+    tag: z.string().min(1).max(24).describe("Short free-text label shown alongside the app's resources"),
+    color: z
+      .string()
+      .regex(/^#[0-9a-f]{6}$/i)
+      .describe("Hex color, e.g. #4f46e5, rendered wherever the app's resources appear"),
+  },
+  async ({ name, tag, color }) => {
+    try {
+      const result = await platformApiCall("POST", "/apps", { name, tag, color });
+      const app = result.app;
+      return textResult(`Created App "${app.name}" (id: ${app.id}) — tag: ${app.tag}, color: ${app.color}.`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "app_list",
+  "List every App on your account: id, name, tag, color, attached OAuth client, status, and timestamps. " +
+    "Requires a master shb_ key.",
+  {},
+  async () => {
+    try {
+      const result = await platformApiCall("GET", "/apps");
+      const apps = result.apps ?? [];
+      return textResult(JSON.stringify(apps, null, 2));
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "app_get",
+  "Fetch a single App by id: name, tag, color, attached OAuth client, status, and timestamps. A master " +
+    "shb_ key can fetch any of the account's Apps; an app-bound key can only fetch the App it's bound to.",
+  {
+    id: z.string().min(1).describe("App id"),
+  },
+  async ({ id }) => {
+    try {
+      const result = await platformApiCall("GET", `/apps/${encodeURIComponent(id)}`);
+      return textResult(JSON.stringify(result.app, null, 2));
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "app_set",
+  "Update an App's name, tag, color, and/or attached OAuth client id. Only the fields provided are changed. " +
+    "Requires a master shb_ key.",
+  {
+    id: z.string().min(1).describe("App id"),
+    name: z.string().min(1).max(60).optional().describe("New display name"),
+    tag: z.string().min(1).max(24).optional().describe("New short free-text label"),
+    color: z
+      .string()
+      .regex(/^#[0-9a-f]{6}$/i)
+      .optional()
+      .describe("New hex color, e.g. #4f46e5"),
+    oauth_client_id: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("Attach an existing sherlock OAuth client id (display/link only, not enforced), or null to detach"),
+  },
+  async ({ id, name, tag, color, oauth_client_id }) => {
+    try {
+      const body = {};
+      if (name !== undefined) body.name = name;
+      if (tag !== undefined) body.tag = tag;
+      if (color !== undefined) body.color = color;
+      if (oauth_client_id !== undefined) body.oauth_client_id = oauth_client_id;
+      const result = await platformApiCall("PATCH", `/apps/${encodeURIComponent(id)}`, body);
+      const app = result.app;
+      return textResult(`Updated App "${app.name}" (id: ${app.id}) — tag: ${app.tag}, color: ${app.color}.`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "app_resources",
+  "Fetch the unified per-app view: every key, database, file, link, and page attributed to this App, plus " +
+    "per-type counts. A master shb_ key can fetch any of the account's Apps; an app-bound key can only fetch " +
+    "the App it's bound to.",
+  {
+    id: z.string().min(1).describe("App id"),
+  },
+  async ({ id }) => {
+    try {
+      const result = await platformApiCall("GET", `/apps/${encodeURIComponent(id)}/resources`);
+      return textResult(JSON.stringify(result.resources, null, 2));
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "app_delete",
+  "Permanently delete an App by id. This deletes only the App itself — every key, database, file, link, " +
+    "and page it owned survives; the app_id attribution on each is simply cleared (un-grouped, never " +
+    "destroyed). Requires a master shb_ key. Irreversible — requires confirm to exactly match id.",
+  {
+    id: z.string().min(1).describe("App id to delete"),
+    confirm: z.string().min(1).describe("Must exactly equal id to confirm the delete"),
+  },
+  async ({ id, confirm }) => {
+    try {
+      if (confirm !== id) {
+        throw new ToolError(`confirm must exactly match id ("${id}") to delete an app`);
+      }
+      await platformApiCall("DELETE", `/apps/${encodeURIComponent(id)}`, { confirm });
+      return textResult(`Deleted App ${id}. Its keys, databases, files, links, and pages survive, un-grouped.`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "app_assign",
+  "Attribute an existing resource (key, database, file, link, or page) to an App. Requires a master shb_ key.",
+  {
+    app_id: z.string().min(1).describe("App id to assign the resource to"),
+    resource_type: z.enum(["page", "object", "link", "database", "key"]).describe("Resource type"),
+    resource_id: z.string().min(1).describe("Resource id"),
+  },
+  async ({ app_id, resource_type, resource_id }) => {
+    try {
+      await platformApiCall("POST", `/apps/${encodeURIComponent(app_id)}/assign`, {
+        resource_type,
+        resource_id,
+      });
+      return textResult(`Assigned ${resource_type} ${resource_id} to App ${app_id}.`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "app_unassign",
+  "Clear a resource's (key, database, file, link, or page) attribution to an App, without deleting the " +
+    "resource. Requires a master shb_ key.",
+  {
+    app_id: z.string().min(1).describe("App id to unassign the resource from"),
+    resource_type: z.enum(["page", "object", "link", "database", "key"]).describe("Resource type"),
+    resource_id: z.string().min(1).describe("Resource id"),
+  },
+  async ({ app_id, resource_type, resource_id }) => {
+    try {
+      await platformApiCall("DELETE", `/apps/${encodeURIComponent(app_id)}/assign`, {
+        resource_type,
+        resource_id,
+      });
+      return textResult(`Unassigned ${resource_type} ${resource_id} from App ${app_id}.`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
   "key_create_app",
-  "Mint a new scoped APP api key, typically for a sub-agent. Requires a master shb_ key. The response " +
-    "includes the plaintext key shown only this once — sherlock never stores or returns it again, so copy " +
-    "it now and hand it to the sub-agent; a lost key must be revoked (key_revoke) and re-minted.",
+  "Mint a new scoped APP api key, typically for a sub-agent. Requires a master shb_ key. Optionally bind " +
+    "the key to an App at birth (app_id) so everything it creates is auto-attributed to that App. The " +
+    "response includes the plaintext key shown only this once — sherlock never stores or returns it again, " +
+    "so copy it now and hand it to the sub-agent; a lost key must be revoked (key_revoke) and re-minted.",
   {
     name: z.string().min(1).max(60).describe("Key display name"),
     apps: z
       .array(z.enum(["page", "serve", "link", "base"]))
       .min(1)
       .describe("Scopes to grant: a non-empty subset of page, serve, link, base"),
+    app_id: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Optional App id to bind this key to, so everything it creates is auto-attributed to that App"),
   },
-  async ({ name, apps }) => {
+  async ({ name, apps, app_id }) => {
     try {
-      const result = await platformApiCall("POST", "/keys", { name, apps });
+      const body = app_id !== undefined ? { name, apps, app_id } : { name, apps };
+      const result = await platformApiCall("POST", "/keys", body);
+      const appLine = result.appId ? `, app: ${result.appId}` : "";
       return textResult(
-        `Created APP key "${result.name}" — tier: ${result.tier}, apps: ${result.apps.join(", ")}, ` +
+        `Created APP key "${result.name}" — tier: ${result.tier}, apps: ${result.apps.join(", ")}${appLine}, ` +
           `prefix: ${result.keyPrefix}\nkey: ${result.key}\n` +
           `This key is shown once and cannot be retrieved again — copy it now and hand it to the sub-agent.`,
       );
