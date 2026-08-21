@@ -1,0 +1,20 @@
+{
+  "name": "shebang-mcp",
+  "version": "0.1.0",
+  "description": "Stdio MCP server + CLI for shebang: pages, files, short links, Postgres databases, and OAuth/keys over one federated API. Public client for accounts on shebang.pro.",
+  "type": "module",
+  "license": "MIT",
+  "repository": "github:New-Kringster/shebang-mcp",
+  "bin": {
+    "shebang-mcp": "./src/cli.js"
+  },
+  "main": "src/index.js",
+  "files": ["src", "skills", "README.md", "LICENSE"],
+  "scripts": {
+    "start": "node src/cli.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.0.0"
+  }
+}
