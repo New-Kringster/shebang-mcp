@@ -903,6 +903,47 @@ server.tool(
 );
 
 server.tool(
+  "email_send",
+  "Send a plain-text email from the platform's fixed shebang address on your behalf — the from-address is " +
+    "never user-controlled, reply-to is set to your account email, and an on-behalf-of footer is appended " +
+    "server-side. Requires a master shb_ key (no app-key scope for this yet — app keys get 403). Limited to " +
+    "10 emails per account per rolling 24 hours. Text only, single recipient, no attachments, no HTML.",
+  {
+    to: z.string().min(1).describe("Recipient email address"),
+    subject: z.string().min(1).max(200).describe("Subject line, 1-200 characters"),
+    text: z.string().min(1).max(50000).describe("Plain-text body, 1-50,000 characters"),
+  },
+  async ({ to, subject, text }) => {
+    try {
+      const result = await platformApiRequest("POST", "/email", { to, subject, text });
+      if (!result.ok) {
+        const errorField =
+          result.data && typeof result.data === "object" && "error" in result.data
+            ? result.data.error
+            : JSON.stringify(result.data);
+        if (result.status === 429 && errorField === "email_quota_exceeded") {
+          const hours =
+            result.data && typeof result.data === "object" && "retry_after_hours" in result.data
+              ? result.data.retry_after_hours
+              : "some";
+          throw new ToolError(`email quota exceeded — try again in ~${hours}h`);
+        }
+        if (result.status === 403 && errorField === "insufficient_scope") {
+          throw new ToolError("email_send requires a master shb_ key — app keys cannot send email");
+        }
+        const message =
+          result.data && typeof result.data === "object" && "message" in result.data ? result.data.message : "";
+        throw new ToolError(`platform API error ${result.status}: ${errorField}${message ? ` (${message})` : ""}`);
+      }
+      const data = result.data;
+      return textResult(`Sent — resend_id: ${data.resend_id}, remaining today: ${data.remaining_today}`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
   "base_list_projects",
   "List your sherbase Postgres projects (slug, database name, created date).",
   {},

@@ -134,6 +134,12 @@ reminder.
 | `key_list` | List every key on the account (never hashes or plaintext) |
 | `key_revoke` | Permanently revoke a key by id — irreversible |
 
+**Email** (master-only)
+
+| Tool | What it does |
+| --- | --- |
+| `email_send` | Send a plain-text email from the platform's address, reply-to your account — limited to 10/day |
+
 **OAuth** (master-only)
 
 | Tool | What it does |

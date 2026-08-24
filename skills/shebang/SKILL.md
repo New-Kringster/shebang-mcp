@@ -75,6 +75,11 @@ optionally custom-aliased URL) — `link_list`, `link_get`, `link_set_access`,
 **Keys and identity** (`platform` — master-only) — `key_create_app`,
 `key_list`, `key_revoke`, `oauth_list_clients`, `oauth_create_client`.
 
+**Email** (`platform` — master-only) — `email_send`. Sends plain text from
+the platform's fixed address (reply-to your account, on-behalf-of footer
+appended server-side); capped at 10 emails per account per rolling 24
+hours, and app keys get 403 — only a master key can call it.
+
 Read `src/index.js` in this repo for each tool's exact parameters — every
 tool has a full Zod schema and description string; this table is a map, not
 a substitute for the schema.
@@ -120,3 +125,7 @@ alias: "my-alias" })` to get `sl.shebang.pro/my-alias`.
 **Delegate to a sub-agent safely.** Mint it a scoped key
 (`key_create_app({ name, apps: [...] })`) rather than sharing the master
 key or `~/.config/shebang/credentials.json`.
+
+**Send a notification email.** `email_send({ to, subject, text })` — master
+key only, 10/day per account, text only (no HTML/attachments); the
+from-address is fixed and reply-to is your own account email.
