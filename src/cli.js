@@ -211,9 +211,36 @@ async function cmdStatus() {
 
   if (response.status === 200) {
     const data = await response.json().catch(() => null);
-    const count = Array.isArray(data?.keys) ? data.keys.length : "unknown";
+    const keys = Array.isArray(data?.keys) ? data.keys : null;
+    const count = keys ? keys.length : "unknown";
     console.log(`Tier: master`);
     console.log(`Keys on this account: ${count}`);
+
+    // Best-effort: find this key's own row (matched by its 12-char
+    // prefix, the same value the server stores as key_prefix) and resolve
+    // its home project id to a slug via GET /projects. Silent on any
+    // failure — this is a nice-to-have, not required for status to be
+    // useful, and the /keys response only carries the raw project id
+    // (projectId), not the slug, so a second call is the only way to
+    // print something human-readable here.
+    try {
+      const ownPrefix = apiKey.slice(0, 12);
+      const own = keys?.find((k) => k.keyPrefix === ownPrefix);
+      if (own?.projectId) {
+        const projectsResponse = await fetch(`${baseUrl}/api/platform/v1/projects`, {
+          headers: { authorization: `Bearer ${apiKey}` },
+        });
+        if (projectsResponse.status === 200) {
+          const projectsData = await projectsResponse.json().catch(() => null);
+          const project = Array.isArray(projectsData?.projects)
+            ? projectsData.projects.find((p) => p.id === own.projectId)
+            : undefined;
+          if (project?.slug) console.log(`Home project: ${project.slug}`);
+        }
+      }
+    } catch {
+      // best-effort only — status is still useful without this line
+    }
   } else if (response.status === 403) {
     console.log("Tier: app-scoped key (not master — cannot list account keys)");
   } else if (response.status === 401) {

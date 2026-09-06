@@ -179,7 +179,7 @@ const SHERBASE_API_BASE = `${BASE_URL}/api/sherbase/v1`;
 /**
  * Thin fetch wrapper for the sherbase v1 API.
  * @param {"GET"|"POST"|"DELETE"} method
- * @param {string} path - path under /api/sherbase/v1, e.g. "/projects" or "/projects/abc"
+ * @param {string} path - path under /api/sherbase/v1, e.g. "/databases" or "/databases/abc"
  * @param {unknown} [body]
  * @returns {Promise<{ok: boolean, status: number, data: unknown}>}
  */
@@ -398,6 +398,30 @@ async function resolveLinkId(codeOrId) {
   throw new ToolError(`no link found with code or alias "${codeOrId}"`);
 }
 
+/**
+ * project_grant_key/project_revoke_grant/key_create_app accept a project
+ * by slug, but the platform grants and keys routes are id-addressed (no
+ * slug-keyed route for grants). Resolves a slug — or, for convenience, an
+ * id — to its id by scanning GET /projects and matching by slug first,
+ * then by id. Always scans the list rather than trusting a UUID-shaped
+ * input at face value (unlike resolveObjectId/resolveLinkId above): the
+ * list is already scoped to this account, so this doubles as an ownership
+ * check — an id that isn't found in this account's own project list
+ * throws instead of being forwarded, so another account's project id is
+ * never resolved or leaked through.
+ * @param {string} slugOrId
+ * @returns {Promise<string>}
+ */
+async function resolveProjectId(slugOrId) {
+  const result = await platformApiCall("GET", "/projects");
+  const projects = result.projects ?? [];
+  const bySlug = projects.find((p) => p.slug === slugOrId);
+  if (bySlug) return bySlug.id;
+  const byId = projects.find((p) => p.id === slugOrId);
+  if (byId) return byId.id;
+  throw new ToolError(`no project found with slug or id "${slugOrId}"`);
+}
+
 function textResult(text) {
   return { content: [{ type: "text", text }] };
 }
@@ -407,7 +431,7 @@ function errorResult(err) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
-const server = new McpServer({ name: "shebang", version: "0.1.0" });
+const server = new McpServer({ name: "shebang", version: "0.2.0" });
 
 const fileSchema = z.object({
   path: z.string().describe("File path within the bundle, e.g. index.html or assets/app.js"),
@@ -433,8 +457,9 @@ server.tool(
       .optional()
       .describe("Allow-list entries for access 'allow_list': emails or @handles"),
     files: z.array(fileSchema).min(1).describe("Bundle files to upload"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ title, slug, access, entrypoint, expiresAt, maxViews, password, allow, files }) => {
+  async ({ title, slug, access, entrypoint, expiresAt, maxViews, password, allow, files, project }) => {
     try {
       const body = {
         title,
@@ -445,6 +470,7 @@ server.tool(
         ...(maxViews !== undefined ? { maxViews } : {}),
         ...(password !== undefined ? { password } : {}),
         ...(allow !== undefined ? { allow } : {}),
+        ...(project !== undefined ? { project } : {}),
         files,
       };
       const page = await apiCall("POST", "/pages", body);
@@ -467,14 +493,16 @@ server.tool(
     slug: z.string().optional().describe("New slug"),
     expiresAt: z.string().nullable().optional().describe("New ISO 8601 expiry timestamp, or null to clear it"),
     maxViews: z.number().int().positive().nullable().optional().describe("New max-views budget, or null to clear it"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ id, title, slug, expiresAt, maxViews }) => {
+  async ({ id, title, slug, expiresAt, maxViews, project }) => {
     try {
       const body = {
         ...(title !== undefined ? { title } : {}),
         ...(slug !== undefined ? { slug } : {}),
         ...(expiresAt !== undefined ? { expiresAt } : {}),
         ...(maxViews !== undefined ? { maxViews } : {}),
+        ...(project !== undefined ? { project } : {}),
       };
       const page = await apiCall("PATCH", `/pages/${id}`, body);
       return textResult(`Updated "${page.title}" at ${page.url}\naccess: ${page.access}, status: ${page.status}`);
@@ -489,10 +517,14 @@ server.tool(
   "List your sherpages. Returns each page's URL.",
   {
     status: z.enum(["active", "archived"]).optional().describe("Filter by status; defaults to active"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ status }) => {
+  async ({ status, project }) => {
     try {
-      const query = status ? `?status=${encodeURIComponent(status)}` : "";
+      const params = new URLSearchParams();
+      if (status) params.set("status", status);
+      if (project) params.set("project", project);
+      const query = params.toString() ? `?${params.toString()}` : "";
       const result = await apiCall("GET", `/pages${query}`);
       const pages = result.pages ?? [];
       if (pages.length === 0) {
@@ -513,10 +545,12 @@ server.tool(
   "Get details for one sherpage by id. Returns the page URL.",
   {
     id: z.string().describe("Page id"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ id }) => {
+  async ({ id, project }) => {
     try {
-      const page = await apiCall("GET", `/pages/${id}`);
+      const query = project ? `?project=${encodeURIComponent(project)}` : "";
+      const page = await apiCall("GET", `/pages/${id}${query}`);
       return textResult(
         `"${page.title}" at ${page.url}\naccess: ${page.access}, status: ${page.status}, ` +
           `files: ${page.fileCount}, size: ${page.sizeBytes} bytes, views: ${page.viewCount}` +
@@ -539,10 +573,15 @@ server.tool(
       .nullable()
       .optional()
       .describe("Password to set when access is 'password'; pass null to clear a previously-set password"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ id, access, password }) => {
+  async ({ id, access, password, project }) => {
     try {
-      const body = { access, ...(password !== undefined ? { password } : {}) };
+      const body = {
+        access,
+        ...(password !== undefined ? { password } : {}),
+        ...(project !== undefined ? { project } : {}),
+      };
       const page = await apiCall("PATCH", `/pages/${id}`, body);
       return textResult(`Access for "${page.title}" (${page.url}) is now "${page.access}".`);
     } catch (err) {
@@ -557,10 +596,14 @@ server.tool(
   {
     id: z.string().describe("Page id"),
     restore: z.boolean().optional().describe("Set true to restore an archived page back to active instead"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ id, restore }) => {
+  async ({ id, restore, project }) => {
     try {
-      const body = { status: restore ? "active" : "archived" };
+      const body = {
+        status: restore ? "active" : "archived",
+        ...(project !== undefined ? { project } : {}),
+      };
       const page = await apiCall("PATCH", `/pages/${id}`, body);
       return textResult(`"${page.title}" (${page.url}) is now ${page.status}.`);
     } catch (err) {
@@ -576,14 +619,16 @@ server.tool(
   {
     id: z.string().describe("Page id"),
     confirm: z.string().min(1).describe("Must exactly equal id to confirm the delete"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ id, confirm }) => {
+  async ({ id, confirm, project }) => {
     try {
       if (confirm !== id) {
         throw new ToolError(`confirm must exactly match id ("${id}") to delete a page`);
       }
-      const page = await apiCall("GET", `/pages/${id}`);
-      await apiCall("DELETE", `/pages/${id}`);
+      const query = project ? `?project=${encodeURIComponent(project)}` : "";
+      const page = await apiCall("GET", `/pages/${id}${query}`);
+      await apiCall("DELETE", `/pages/${id}`, project !== undefined ? { project } : undefined);
       return textResult(`Deleted "${page.title}" (${page.url}).`);
     } catch (err) {
       return errorResult(err);
@@ -643,23 +688,128 @@ server.tool(
   },
 );
 
+/** Shared implementations behind every project_* tool and its hidden
+ *  app_* alias (one function per tool, registered under both names, each
+ *  alias marked with a "Hidden alias" comment above it) — kept as shared
+ *  functions so the alias registration below is a one-line body instead of
+ *  a duplicated implementation per pair. */
+
+async function handleProjectCreate({ name, tag, color, slug }) {
+  const result = await platformApiCall("POST", "/projects", { name, tag, color, slug });
+  const project = result.project;
+  return textResult(
+    `Created Project "${project.name}" (id: ${project.id}, slug: ${project.slug}) — tag: ${project.tag}, ` +
+      `color: ${project.color}.`,
+  );
+}
+
+async function handleProjectList() {
+  const result = await platformApiCall("GET", "/projects");
+  const projects = result.projects ?? [];
+  return textResult(JSON.stringify(projects, null, 2));
+}
+
+async function handleProjectGet({ id }) {
+  const result = await platformApiCall("GET", `/projects/${encodeURIComponent(id)}`);
+  return textResult(JSON.stringify(result.project, null, 2));
+}
+
+async function handleProjectSet({ id, name, tag, color, slug, oauth_client_id }) {
+  const body = {};
+  if (name !== undefined) body.name = name;
+  if (tag !== undefined) body.tag = tag;
+  if (color !== undefined) body.color = color;
+  if (slug !== undefined) body.slug = slug;
+  if (oauth_client_id !== undefined) body.oauth_client_id = oauth_client_id;
+  const result = await platformApiCall("PATCH", `/projects/${encodeURIComponent(id)}`, body);
+  const project = result.project;
+  return textResult(
+    `Updated Project "${project.name}" (id: ${project.id}, slug: ${project.slug}) — tag: ${project.tag}, ` +
+      `color: ${project.color}.`,
+  );
+}
+
+async function handleProjectResources({ id }) {
+  const result = await platformApiCall("GET", `/projects/${encodeURIComponent(id)}/resources`);
+  return textResult(JSON.stringify(result.resources, null, 2));
+}
+
+async function handleProjectDelete({ id, confirm, move_to }) {
+  if (confirm !== id) {
+    throw new ToolError(`confirm must exactly match id ("${id}") to delete a project`);
+  }
+  const body = { confirm, ...(move_to !== undefined ? { move_to } : {}) };
+  await platformApiCall("DELETE", `/projects/${encodeURIComponent(id)}`, body);
+  return textResult(
+    `Deleted Project ${id}.${move_to ? ` Its contents moved to "${move_to}" first.` : " Its keys, databases, files, links, and pages survive, un-grouped."}`,
+  );
+}
+
+async function handleProjectAssign({ id, resource_type, resource_id }) {
+  await platformApiCall("POST", `/projects/${encodeURIComponent(id)}/assign`, { resource_type, resource_id });
+  return textResult(`Assigned ${resource_type} ${resource_id} to Project ${id}.`);
+}
+
+async function handleProjectUnassign({ id, resource_type, resource_id }) {
+  // Server-side, this always moves the resource to the account's default
+  // project — `[id]` in the path is only validated as well-formed, never
+  // consulted for the write (Task 5's design: there is no more "unassign
+  // to null" now that project_id is NOT NULL everywhere). `id` is kept as
+  // this tool's argument anyway, matching project_assign's shape and the
+  // old app_unassign's app_id, even though the server ignores it.
+  await platformApiCall("POST", `/projects/${encodeURIComponent(id)}/unassign`, { resource_type, resource_id });
+  return textResult(`Unassigned ${resource_type} ${resource_id} — moved to your account's default project.`);
+}
+
+const projectSlugSchema = z
+  .string()
+  .min(3)
+  .max(30)
+  .regex(/^[a-z0-9_]{3,30}$/)
+  .describe(
+    "URL-safe project slug: 3-30 lowercase letters, numbers, or underscores. A reserved-word list is enforced server-side.",
+  );
+
+const resourceTypeSchema = z.enum(["page", "object", "link", "database", "key"]).describe("Resource type");
+
 server.tool(
-  "app_create",
-  "Create a new App: a user-owned workspace entity (name, tag, color) that keys, databases, files, links, " +
-    "and pages can be attributed to. Requires a master shb_ key.",
+  "project_create",
+  "Create a new Project: a user-owned workspace entity (name, tag, color, slug) that keys, databases, files, " +
+    "links, and pages can be attributed to. Requires a master shb_ key.",
   {
-    name: z.string().min(1).max(60).describe("App display name"),
-    tag: z.string().min(1).max(24).describe("Short free-text label shown alongside the app's resources"),
+    name: z.string().min(1).max(60).describe("Project display name"),
+    tag: z.string().min(1).max(24).describe("Short free-text label shown alongside the project's resources"),
     color: z
       .string()
       .regex(/^#[0-9a-f]{6}$/i)
-      .describe("Hex color, e.g. #4f46e5, rendered wherever the app's resources appear"),
+      .describe("Hex color, e.g. #4f46e5, rendered wherever the project's resources appear"),
+    slug: projectSlugSchema,
   },
-  async ({ name, tag, color }) => {
+  async ({ name, tag, color, slug }) => {
     try {
-      const result = await platformApiCall("POST", "/apps", { name, tag, color });
-      const app = result.app;
-      return textResult(`Created App "${app.name}" (id: ${app.id}) — tag: ${app.tag}, color: ${app.color}.`);
+      return await handleProjectCreate({ name, tag, color, slug });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+// Hidden alias — one release, not documented in README/SKILL.md.
+server.tool(
+  "app_create",
+  "Deprecated alias for project_create.",
+  {
+    name: z.string().min(1).max(60).describe("Project display name"),
+    tag: z.string().min(1).max(24).describe("Short free-text label shown alongside the project's resources"),
+    color: z
+      .string()
+      .regex(/^#[0-9a-f]{6}$/i)
+      .describe("Hex color, e.g. #4f46e5, rendered wherever the project's resources appear"),
+    slug: projectSlugSchema,
+  },
+  async ({ name, tag, color, slug }) => {
+    try {
+      return await handleProjectCreate({ name, tag, color, slug });
     } catch (err) {
       return errorResult(err);
     }
@@ -667,15 +817,27 @@ server.tool(
 );
 
 server.tool(
-  "app_list",
-  "List every App on your account: id, name, tag, color, attached OAuth client, status, and timestamps. " +
-    "Requires a master shb_ key.",
+  "project_list",
+  "List every Project on your account: id, name, tag, color, slug, attached OAuth client, status, and " +
+    "timestamps. Requires a master shb_ key.",
   {},
   async () => {
     try {
-      const result = await platformApiCall("GET", "/apps");
-      const apps = result.apps ?? [];
-      return textResult(JSON.stringify(apps, null, 2));
+      return await handleProjectList();
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+// Hidden alias — one release, not documented in README/SKILL.md.
+server.tool(
+  "app_list",
+  "Deprecated alias for project_list.",
+  {},
+  async () => {
+    try {
+      return await handleProjectList();
     } catch (err) {
       return errorResult(err);
     }
@@ -683,16 +845,32 @@ server.tool(
 );
 
 server.tool(
-  "app_get",
-  "Fetch a single App by id: name, tag, color, attached OAuth client, status, and timestamps. A master " +
-    "shb_ key can fetch any of the account's Apps; an app-bound key can only fetch the App it's bound to.",
+  "project_get",
+  "Fetch a single Project by id: name, tag, color, slug, attached OAuth client, status, and timestamps. A " +
+    "master shb_ key can fetch any of the account's Projects; a project-bound key can only fetch the Project " +
+    "it's bound to.",
   {
-    id: z.string().min(1).describe("App id"),
+    id: z.string().min(1).describe("Project id"),
   },
   async ({ id }) => {
     try {
-      const result = await platformApiCall("GET", `/apps/${encodeURIComponent(id)}`);
-      return textResult(JSON.stringify(result.app, null, 2));
+      return await handleProjectGet({ id });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+// Hidden alias — one release, not documented in README/SKILL.md.
+server.tool(
+  "app_get",
+  "Deprecated alias for project_get.",
+  {
+    id: z.string().min(1).describe("Project id"),
+  },
+  async ({ id }) => {
+    try {
+      return await handleProjectGet({ id });
     } catch (err) {
       return errorResult(err);
     }
@@ -700,11 +878,40 @@ server.tool(
 );
 
 server.tool(
-  "app_set",
-  "Update an App's name, tag, color, and/or attached OAuth client id. Only the fields provided are changed. " +
-    "Requires a master shb_ key.",
+  "project_set",
+  "Update a Project's name, tag, color, slug, and/or attached OAuth client id. Only the fields provided are " +
+    "changed. Requires a master shb_ key.",
   {
-    id: z.string().min(1).describe("App id"),
+    id: z.string().min(1).describe("Project id"),
+    name: z.string().min(1).max(60).optional().describe("New display name"),
+    tag: z.string().min(1).max(24).optional().describe("New short free-text label"),
+    color: z
+      .string()
+      .regex(/^#[0-9a-f]{6}$/i)
+      .optional()
+      .describe("New hex color, e.g. #4f46e5"),
+    slug: projectSlugSchema.optional(),
+    oauth_client_id: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("Attach an existing sherlock OAuth client id (display/link only, not enforced), or null to detach"),
+  },
+  async ({ id, name, tag, color, slug, oauth_client_id }) => {
+    try {
+      return await handleProjectSet({ id, name, tag, color, slug, oauth_client_id });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+// Hidden alias — one release, not documented in README/SKILL.md.
+server.tool(
+  "app_set",
+  "Deprecated alias for project_set.",
+  {
+    id: z.string().min(1).describe("Project id"),
     name: z.string().min(1).max(60).optional().describe("New display name"),
     tag: z.string().min(1).max(24).optional().describe("New short free-text label"),
     color: z
@@ -720,14 +927,7 @@ server.tool(
   },
   async ({ id, name, tag, color, oauth_client_id }) => {
     try {
-      const body = {};
-      if (name !== undefined) body.name = name;
-      if (tag !== undefined) body.tag = tag;
-      if (color !== undefined) body.color = color;
-      if (oauth_client_id !== undefined) body.oauth_client_id = oauth_client_id;
-      const result = await platformApiCall("PATCH", `/apps/${encodeURIComponent(id)}`, body);
-      const app = result.app;
-      return textResult(`Updated App "${app.name}" (id: ${app.id}) — tag: ${app.tag}, color: ${app.color}.`);
+      return await handleProjectSet({ id, name, tag, color, oauth_client_id });
     } catch (err) {
       return errorResult(err);
     }
@@ -735,60 +935,113 @@ server.tool(
 );
 
 server.tool(
-  "app_resources",
-  "Fetch the unified per-app view: every key, database, file, link, and page attributed to this App, plus " +
-    "per-type counts. A master shb_ key can fetch any of the account's Apps; an app-bound key can only fetch " +
-    "the App it's bound to.",
+  "project_resources",
+  "Fetch the unified per-project view: every key, database, file, link, and page attributed to this " +
+    "Project, plus per-type counts. A master shb_ key can fetch any of the account's Projects; a " +
+    "project-bound key can only fetch the Project it's bound to.",
   {
-    id: z.string().min(1).describe("App id"),
+    id: z.string().min(1).describe("Project id"),
   },
   async ({ id }) => {
     try {
-      const result = await platformApiCall("GET", `/apps/${encodeURIComponent(id)}/resources`);
-      return textResult(JSON.stringify(result.resources, null, 2));
+      return await handleProjectResources({ id });
     } catch (err) {
       return errorResult(err);
     }
   },
 );
 
+// Hidden alias — one release, not documented in README/SKILL.md.
+server.tool(
+  "app_resources",
+  "Deprecated alias for project_resources.",
+  {
+    id: z.string().min(1).describe("Project id"),
+  },
+  async ({ id }) => {
+    try {
+      return await handleProjectResources({ id });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "project_delete",
+  "Permanently delete a Project by id. This deletes only the Project itself — every key, database, file, " +
+    "link, and page it owned survives; without move_to, a non-empty Project 409s (project_not_empty) rather " +
+    "than orphaning its contents. Requires a master shb_ key. Irreversible — requires confirm to exactly " +
+    "match id.",
+  {
+    id: z.string().min(1).describe("Project id to delete"),
+    confirm: z.string().min(1).describe("Must exactly equal id to confirm the delete"),
+    move_to: z
+      .string()
+      .optional()
+      .describe("Slug of another of this account's projects to move this project's contents into first"),
+  },
+  async ({ id, confirm, move_to }) => {
+    try {
+      return await handleProjectDelete({ id, confirm, move_to });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+// Hidden alias — one release, not documented in README/SKILL.md.
 server.tool(
   "app_delete",
-  "Permanently delete an App by id. This deletes only the App itself — every key, database, file, link, " +
-    "and page it owned survives; the app_id attribution on each is simply cleared (un-grouped, never " +
-    "destroyed). Requires a master shb_ key. Irreversible — requires confirm to exactly match id.",
+  "Deprecated alias for project_delete.",
   {
-    id: z.string().min(1).describe("App id to delete"),
+    id: z.string().min(1).describe("Project id to delete"),
     confirm: z.string().min(1).describe("Must exactly equal id to confirm the delete"),
+    move_to: z
+      .string()
+      .optional()
+      .describe("Slug of another of this account's projects to move this project's contents into first"),
   },
-  async ({ id, confirm }) => {
+  async ({ id, confirm, move_to }) => {
     try {
-      if (confirm !== id) {
-        throw new ToolError(`confirm must exactly match id ("${id}") to delete an app`);
-      }
-      await platformApiCall("DELETE", `/apps/${encodeURIComponent(id)}`, { confirm });
-      return textResult(`Deleted App ${id}. Its keys, databases, files, links, and pages survive, un-grouped.`);
+      return await handleProjectDelete({ id, confirm, move_to });
     } catch (err) {
       return errorResult(err);
     }
   },
 );
 
+server.tool(
+  "project_assign",
+  "Attribute an existing resource (key, database, file, link, or page) to a Project. Requires a master shb_ key.",
+  {
+    id: z.string().min(1).describe("Project id to assign the resource to"),
+    resource_type: resourceTypeSchema,
+    resource_id: z.string().min(1).describe("Resource id"),
+  },
+  async ({ id, resource_type, resource_id }) => {
+    try {
+      return await handleProjectAssign({ id, resource_type, resource_id });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+// Hidden alias — one release, not documented in README/SKILL.md. Kept the
+// old app_id argument name (rather than id) so an already-configured
+// agent's call shape doesn't break mid-release.
 server.tool(
   "app_assign",
-  "Attribute an existing resource (key, database, file, link, or page) to an App. Requires a master shb_ key.",
+  "Deprecated alias for project_assign.",
   {
-    app_id: z.string().min(1).describe("App id to assign the resource to"),
-    resource_type: z.enum(["page", "object", "link", "database", "key"]).describe("Resource type"),
+    app_id: z.string().min(1).describe("Project id to assign the resource to"),
+    resource_type: resourceTypeSchema,
     resource_id: z.string().min(1).describe("Resource id"),
   },
   async ({ app_id, resource_type, resource_id }) => {
     try {
-      await platformApiCall("POST", `/apps/${encodeURIComponent(app_id)}/assign`, {
-        resource_type,
-        resource_id,
-      });
-      return textResult(`Assigned ${resource_type} ${resource_id} to App ${app_id}.`);
+      return await handleProjectAssign({ id: app_id, resource_type, resource_id });
     } catch (err) {
       return errorResult(err);
     }
@@ -796,21 +1049,79 @@ server.tool(
 );
 
 server.tool(
-  "app_unassign",
-  "Clear a resource's (key, database, file, link, or page) attribution to an App, without deleting the " +
-    "resource. Requires a master shb_ key.",
+  "project_unassign",
+  "Clear a resource's (key, database, file, link, or page) attribution to a Project, moving it to your " +
+    "account's default Project instead of deleting it. Requires a master shb_ key.",
   {
-    app_id: z.string().min(1).describe("App id to unassign the resource from"),
-    resource_type: z.enum(["page", "object", "link", "database", "key"]).describe("Resource type"),
+    id: z.string().min(1).describe("Project id to unassign the resource from"),
+    resource_type: resourceTypeSchema,
+    resource_id: z.string().min(1).describe("Resource id"),
+  },
+  async ({ id, resource_type, resource_id }) => {
+    try {
+      return await handleProjectUnassign({ id, resource_type, resource_id });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+// Hidden alias — one release, not documented in README/SKILL.md. Kept the
+// old app_id argument name (rather than id) so an already-configured
+// agent's call shape doesn't break mid-release.
+server.tool(
+  "app_unassign",
+  "Deprecated alias for project_unassign.",
+  {
+    app_id: z.string().min(1).describe("Project id to unassign the resource from"),
+    resource_type: resourceTypeSchema,
     resource_id: z.string().min(1).describe("Resource id"),
   },
   async ({ app_id, resource_type, resource_id }) => {
     try {
-      await platformApiCall("DELETE", `/apps/${encodeURIComponent(app_id)}/assign`, {
-        resource_type,
-        resource_id,
+      return await handleProjectUnassign({ id: app_id, resource_type, resource_id });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "project_grant_key",
+  "Grant an api key access to a Project it isn't homed in: 'read' permits list/fetch, 'full' also permits " +
+    "create/update/delete. Repeat calls with a different level change it (upsert). Requires a master shb_ key.",
+  {
+    key_id: z.string().min(1).describe("Key id to grant access to"),
+    project: z.string().min(1).describe("Project slug (or id) to grant access to"),
+    level: z.enum(["read", "full"]).describe("Grant level"),
+  },
+  async ({ key_id, project, level }) => {
+    try {
+      const projectId = await resolveProjectId(project);
+      await platformApiCall("POST", `/projects/${encodeURIComponent(projectId)}/grants`, {
+        key_id,
+        level,
       });
-      return textResult(`Unassigned ${resource_type} ${resource_id} from App ${app_id}.`);
+      return textResult(`Granted key ${key_id} "${level}" access to project "${project}".`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "project_revoke_grant",
+  "Revoke an api key's granted access to a Project it isn't homed in (its access to its own home Project is " +
+    "unaffected). Requires a master shb_ key.",
+  {
+    key_id: z.string().min(1).describe("Key id to revoke the grant from"),
+    project: z.string().min(1).describe("Project slug (or id) to revoke access to"),
+  },
+  async ({ key_id, project }) => {
+    try {
+      const projectId = await resolveProjectId(project);
+      await platformApiCall("DELETE", `/projects/${encodeURIComponent(projectId)}/grants`, { key_id });
+      return textResult(`Revoked key ${key_id}'s grant on project "${project}".`);
     } catch (err) {
       return errorResult(err);
     }
@@ -820,28 +1131,46 @@ server.tool(
 server.tool(
   "key_create_app",
   "Mint a new scoped APP api key, typically for a sub-agent. Requires a master shb_ key. Optionally bind " +
-    "the key to an App at birth (app_id) so everything it creates is auto-attributed to that App. The " +
-    "response includes the plaintext key shown only this once — sherlock never stores or returns it again, " +
-    "so copy it now and hand it to the sub-agent; a lost key must be revoked (key_revoke) and re-minted.",
+    "the key to a Project at birth (project, a slug) so everything it creates is auto-attributed to that " +
+    "Project — defaults to this key's own home project when omitted. The response includes the plaintext " +
+    "key shown only this once — sherlock never stores or returns it again, so copy it now and hand it to " +
+    "the sub-agent; a lost key must be revoked (key_revoke) and re-minted.",
   {
     name: z.string().min(1).max(60).describe("Key display name"),
     apps: z
       .array(z.enum(["page", "serve", "link", "base"]))
       .min(1)
       .describe("Scopes to grant: a non-empty subset of page, serve, link, base"),
-    app_id: z
+    project: z
       .string()
-      .min(1)
       .optional()
-      .describe("Optional App id to bind this key to, so everything it creates is auto-attributed to that App"),
+      .describe("Optional Project slug to bind this key to, so everything it creates is auto-attributed to that Project"),
+    // Deprecated for one release (commit decfe7b's server-side alias) —
+    // intentionally left out of this describe()'s prose and out of
+    // README/SKILL.md, same "undocumented but callable" treatment as
+    // every other alias in this file; unlike those, it lives inside this
+    // one tool's schema rather than a second server.tool() registration,
+    // since key_create_app itself isn't renamed.
+    app_id: z.string().min(1).optional(),
   },
-  async ({ name, apps, app_id }) => {
+  async ({ name, apps, project, app_id }) => {
     try {
-      const body = app_id !== undefined ? { name, apps, app_id } : { name, apps };
+      // The platform /keys route resolves `project` (a slug) itself
+      // server-side — no client-side resolveProjectId round trip needed
+      // here, unlike project_grant_key/project_revoke_grant, whose target
+      // routes are id-addressed. `app_id`, if given, is forwarded
+      // unchanged (the server validates ownership); if both are given and
+      // disagree, the server's 400 invalid_body surfaces unchanged.
+      const body = {
+        name,
+        apps,
+        ...(project !== undefined ? { project } : {}),
+        ...(app_id !== undefined ? { app_id } : {}),
+      };
       const result = await platformApiCall("POST", "/keys", body);
-      const appLine = result.appId ? `, app: ${result.appId}` : "";
+      const projectLine = result.project ? `, project: ${result.project}` : "";
       return textResult(
-        `Created APP key "${result.name}" — tier: ${result.tier}, apps: ${result.apps.join(", ")}${appLine}, ` +
+        `Created APP key "${result.name}" — tier: ${result.tier}, apps: ${result.apps.join(", ")}${projectLine}, ` +
           `prefix: ${result.keyPrefix}\nkey: ${result.key}\n` +
           `This key is shown once and cannot be retrieved again — copy it now and hand it to the sub-agent.`,
       );
@@ -943,15 +1272,66 @@ server.tool(
   },
 );
 
+/** Shared implementations behind base_list_databases/base_create_database/
+ *  base_drop_database and their hidden base_list_projects/
+ *  base_create_project/base_drop_project aliases — see the project_* doc
+ *  comment above for why this shape is used. base_run_sql keeps its name
+ *  (per the design doc) so it needs no alias/shared-handler split. */
+
+async function handleBaseListDatabases({ project }) {
+  const query = project ? `?project=${encodeURIComponent(project)}` : "";
+  const result = await sherbaseApiCall("GET", `/databases${query}`);
+  const databases = result.projects ?? [];
+  return textResult(JSON.stringify(databases, null, 2));
+}
+
+async function handleBaseCreateDatabase({ slug, project }) {
+  const body = { slug, ...(project !== undefined ? { project } : {}) };
+  const result = await sherbaseApiCall("POST", "/databases", body);
+  const database = result.project;
+  return textResult(
+    `Created database "${database.slug}" — database: ${database.dbName}, role: ${database.roleName}\n` +
+      `password: ${database.password}\n` +
+      `connection string: ${database.connection.pooler}\n` +
+      `This password and connection string are shown once and cannot be retrieved again — save them now.`,
+  );
+}
+
+async function handleBaseDropDatabase({ slug, confirm }) {
+  if (confirm !== slug) {
+    throw new ToolError(`confirm must exactly match slug ("${slug}") to drop a database`);
+  }
+  await sherbaseApiCall("DELETE", `/databases/${encodeURIComponent(slug)}`, { confirm });
+  return textResult(`Dropped database "${slug}".`);
+}
+
+const projectQueryParamSchema = z.string().optional().describe("Project slug; defaults to this key's home project");
+
+server.tool(
+  "base_list_databases",
+  "List your sherbase Postgres databases (slug, database name, created date).",
+  {
+    project: projectQueryParamSchema,
+  },
+  async ({ project }) => {
+    try {
+      return await handleBaseListDatabases({ project });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+// Hidden alias — one release, not documented in README/SKILL.md.
 server.tool(
   "base_list_projects",
-  "List your sherbase Postgres projects (slug, database name, created date).",
-  {},
-  async () => {
+  "Deprecated alias for base_list_databases.",
+  {
+    project: projectQueryParamSchema,
+  },
+  async ({ project }) => {
     try {
-      const result = await sherbaseApiCall("GET", "/projects");
-      const projects = result.projects ?? [];
-      return textResult(JSON.stringify(projects, null, 2));
+      return await handleBaseListDatabases({ project });
     } catch (err) {
       return errorResult(err);
     }
@@ -959,23 +1339,34 @@ server.tool(
 );
 
 server.tool(
-  "base_create_project",
-  "Provision a new sherbase Postgres project (a dedicated database and role). The response includes a " +
+  "base_create_database",
+  "Provision a new sherbase Postgres database (a dedicated database and role). The response includes a " +
     "password and connection string shown only this once — sherbase never stores or returns them again, " +
     "so save them now.",
   {
-    slug: z.string().min(1).describe("URL-safe project slug; used to name the database and role"),
+    slug: z.string().min(1).describe("URL-safe database slug; used to name the database and role"),
+    project: projectQueryParamSchema,
   },
-  async ({ slug }) => {
+  async ({ slug, project }) => {
     try {
-      const result = await sherbaseApiCall("POST", "/projects", { slug });
-      const project = result.project;
-      return textResult(
-        `Created project "${project.slug}" — database: ${project.dbName}, role: ${project.roleName}\n` +
-          `password: ${project.password}\n` +
-          `connection string: ${project.connection.pooler}\n` +
-          `This password and connection string are shown once and cannot be retrieved again — save them now.`,
-      );
+      return await handleBaseCreateDatabase({ slug, project });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+// Hidden alias — one release, not documented in README/SKILL.md.
+server.tool(
+  "base_create_project",
+  "Deprecated alias for base_create_database.",
+  {
+    slug: z.string().min(1).describe("URL-safe database slug; used to name the database and role"),
+    project: projectQueryParamSchema,
+  },
+  async ({ slug, project }) => {
+    try {
+      return await handleBaseCreateDatabase({ slug, project });
     } catch (err) {
       return errorResult(err);
     }
@@ -984,15 +1375,18 @@ server.tool(
 
 server.tool(
   "base_run_sql",
-  "Run a single SQL statement against a sherbase project's database, as that project's own role. Returns " +
-    "rows, row count, and field names as JSON.",
+  "Run a single SQL statement against a sherbase database, as that database's own role. Returns rows, row " +
+    "count, and field names as JSON.",
   {
-    slug: z.string().min(1).describe("Project slug"),
+    database: z.string().min(1).optional().describe("Database slug"),
+    slug: z.string().min(1).optional().describe("Deprecated alias for database"),
     sql: z.string().min(1).describe("A single SQL statement to execute"),
   },
-  async ({ slug, sql }) => {
+  async ({ database, slug, sql }) => {
     try {
-      const result = await sherbaseApiCall("POST", `/projects/${encodeURIComponent(slug)}/query`, { sql });
+      const dbSlug = database ?? slug;
+      if (!dbSlug) throw new ToolError("either database or slug is required");
+      const result = await sherbaseApiCall("POST", `/databases/${encodeURIComponent(dbSlug)}/query`, { sql });
       const { rows, rowCount, fields } = result;
       return textResult(JSON.stringify({ rows, rowCount, fields }, null, 2));
     } catch (err) {
@@ -1002,20 +1396,33 @@ server.tool(
 );
 
 server.tool(
-  "base_drop_project",
-  "Permanently drop a sherbase project: deletes its database, role, and registry row. Irreversible — " +
+  "base_drop_database",
+  "Permanently drop a sherbase database: deletes its database, role, and registry row. Irreversible — " +
     "requires confirm to exactly match slug.",
   {
-    slug: z.string().min(1).describe("Project slug to drop"),
+    slug: z.string().min(1).describe("Database slug to drop"),
     confirm: z.string().min(1).describe("Must exactly equal slug to confirm the drop"),
   },
   async ({ slug, confirm }) => {
     try {
-      if (confirm !== slug) {
-        throw new ToolError(`confirm must exactly match slug ("${slug}") to drop a project`);
-      }
-      await sherbaseApiCall("DELETE", `/projects/${encodeURIComponent(slug)}`, { confirm });
-      return textResult(`Dropped project "${slug}".`);
+      return await handleBaseDropDatabase({ slug, confirm });
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+// Hidden alias — one release, not documented in README/SKILL.md.
+server.tool(
+  "base_drop_project",
+  "Deprecated alias for base_drop_database.",
+  {
+    slug: z.string().min(1).describe("Database slug to drop"),
+    confirm: z.string().min(1).describe("Must exactly equal slug to confirm the drop"),
+  },
+  async ({ slug, confirm }) => {
+    try {
+      return await handleBaseDropDatabase({ slug, confirm });
     } catch (err) {
       return errorResult(err);
     }
@@ -1037,8 +1444,9 @@ server.tool(
       .array(z.string())
       .optional()
       .describe("Allow-list entries for access 'allow_list': emails or @handles"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ path, slug, title, access, password, expiresAt, maxViews, allow }) => {
+  async ({ path, slug, title, access, password, expiresAt, maxViews, allow, project }) => {
     try {
       let bytes;
       try {
@@ -1055,6 +1463,7 @@ server.tool(
       if (expiresAt !== undefined) form.append("expiresAt", expiresAt);
       if (maxViews !== undefined) form.append("maxViews", String(maxViews));
       if (allow !== undefined) for (const entry of allow) form.append("allow", entry);
+      if (project !== undefined) form.append("project", project);
 
       const result = await sherserveApiCall("POST", "/objects", form);
       const object = result.object;
@@ -1073,10 +1482,13 @@ server.tool(
 server.tool(
   "store_list_objects",
   "List your sherserve objects (active status). Returns each object's f. URL.",
-  {},
-  async () => {
+  {
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
+  },
+  async ({ project }) => {
     try {
-      const result = await sherserveApiCall("GET", "/objects");
+      const query = project ? `?project=${encodeURIComponent(project)}` : "";
+      const result = await sherserveApiCall("GET", `/objects${query}`);
       const objects = result.objects ?? [];
       return textResult(JSON.stringify(objects, null, 2));
     } catch (err) {
@@ -1091,13 +1503,15 @@ server.tool(
   {
     slug: z.string().optional().describe("Object slug (either slug or id is required)"),
     id: z.string().optional().describe("Object id (either slug or id is required)"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ slug, id }) => {
+  async ({ slug, id, project }) => {
     try {
       const input = id ?? slug;
       if (!input) throw new ToolError("either slug or id is required");
       const objectId = await resolveObjectId(input);
-      const object = await sherserveApiCall("GET", `/objects/${objectId}`);
+      const query = project ? `?project=${encodeURIComponent(project)}` : "";
+      const object = await sherserveApiCall("GET", `/objects/${objectId}${query}`);
       return textResult(JSON.stringify(object, null, 2));
     } catch (err) {
       return errorResult(err);
@@ -1113,8 +1527,9 @@ server.tool(
     slug: z.string().optional().describe("Object slug (either slug or id is required)"),
     id: z.string().optional().describe("Object id (either slug or id is required)"),
     confirm: z.string().min(1).describe("Must exactly equal the slug or id passed in to confirm the delete"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ slug, id, confirm }) => {
+  async ({ slug, id, confirm, project }) => {
     try {
       const input = id ?? slug;
       if (!input) throw new ToolError("either slug or id is required");
@@ -1122,7 +1537,8 @@ server.tool(
         throw new ToolError(`confirm must exactly match ${id !== undefined ? "id" : "slug"} ("${input}") to delete an object`);
       }
       const objectId = await resolveObjectId(input);
-      await sherserveApiCall("DELETE", `/objects/${objectId}`);
+      const query = project ? `?project=${encodeURIComponent(project)}` : "";
+      await sherserveApiCall("DELETE", `/objects/${objectId}${query}`);
       return textResult(`Deleted object "${input}".`);
     } catch (err) {
       return errorResult(err);
@@ -1134,10 +1550,13 @@ server.tool(
   "link_list",
   "List your sherlink short links across all apps (sherpage pages and sherserve files). Returns each " +
     "link's short URL, wrapped resource, access, and status as JSON.",
-  {},
-  async () => {
+  {
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
+  },
+  async ({ project }) => {
     try {
-      const result = await sherlinkApiCall("GET", "/links");
+      const query = project ? `?project=${encodeURIComponent(project)}` : "";
+      const result = await sherlinkApiCall("GET", `/links${query}`);
       const links = result.links ?? [];
       return textResult(JSON.stringify(links, null, 2));
     } catch (err) {
@@ -1151,11 +1570,13 @@ server.tool(
   "Get details for one sherlink short link by its code, custom alias, or id. Returns the link as JSON.",
   {
     code_or_id: z.string().min(1).describe("Link code, custom alias, or id"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ code_or_id }) => {
+  async ({ code_or_id, project }) => {
     try {
       const id = await resolveLinkId(code_or_id);
-      const link = await sherlinkApiCall("GET", `/links/${id}`);
+      const query = project ? `?project=${encodeURIComponent(project)}` : "";
+      const link = await sherlinkApiCall("GET", `/links/${id}${query}`);
       return textResult(JSON.stringify(link, null, 2));
     } catch (err) {
       return errorResult(err);
@@ -1177,8 +1598,9 @@ server.tool(
       .describe("Password to set when access is 'password'; pass null to clear a previously-set password"),
     expires_at: z.string().nullable().optional().describe("New ISO 8601 expiry timestamp, or null to clear it"),
     max_views: z.number().int().positive().nullable().optional().describe("New max-views budget, or null to clear it"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ code_or_id, access, password, expires_at, max_views }) => {
+  async ({ code_or_id, access, password, expires_at, max_views, project }) => {
     try {
       const id = await resolveLinkId(code_or_id);
       const body = {
@@ -1186,6 +1608,7 @@ server.tool(
         ...(password !== undefined ? { password } : {}),
         ...(expires_at !== undefined ? { expiresAt: expires_at } : {}),
         ...(max_views !== undefined ? { maxViews: max_views } : {}),
+        ...(project !== undefined ? { project } : {}),
       };
       const link = await sherlinkApiCall("PATCH", `/links/${id}`, body);
       return textResult(JSON.stringify(link, null, 2));
@@ -1202,11 +1625,13 @@ server.tool(
   {
     code_or_id: z.string().min(1).describe("Link code, custom alias, or id"),
     alias: z.string().nullable().describe("New custom alias, or null to clear it"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ code_or_id, alias }) => {
+  async ({ code_or_id, alias, project }) => {
     try {
       const id = await resolveLinkId(code_or_id);
-      const link = await sherlinkApiCall("PATCH", `/links/${id}`, { alias });
+      const body = { alias, ...(project !== undefined ? { project } : {}) };
+      const link = await sherlinkApiCall("PATCH", `/links/${id}`, body);
       return textResult(JSON.stringify(link, null, 2));
     } catch (err) {
       return errorResult(err);
@@ -1223,14 +1648,16 @@ server.tool(
   {
     code_or_id: z.string().min(1).describe("Link code, custom alias, or id"),
     confirm: z.string().min(1).describe("Must exactly equal code_or_id to confirm the delete"),
+    project: z.string().optional().describe("Project slug; defaults to this key's home project"),
   },
-  async ({ code_or_id, confirm }) => {
+  async ({ code_or_id, confirm, project }) => {
     try {
       if (confirm !== code_or_id) {
         throw new ToolError(`confirm must exactly match code_or_id ("${code_or_id}") to delete a link`);
       }
       const id = await resolveLinkId(code_or_id);
-      await sherlinkApiCall("DELETE", `/links/${id}`);
+      const query = project ? `?project=${encodeURIComponent(project)}` : "";
+      await sherlinkApiCall("DELETE", `/links/${id}${query}`);
       return textResult(`Deleted link "${code_or_id}" and its underlying page/file — this cannot be undone.`);
     } catch (err) {
       return errorResult(err);

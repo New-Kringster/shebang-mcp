@@ -29,6 +29,20 @@ key up automatically — log in once, not per-project. If a browser isn't
 available on this machine, open the printed URL from any other device and
 approve there; the CLI keeps polling either way.
 
+## Projects
+
+A **Project** groups a key's resources — keys, databases, files, links, and
+pages — for dashboard organization and access control; it's unrelated to the
+`apps`/`project` scope list on a key (`page`/`serve`/`link`/`base`, see
+below). Every key has exactly one home Project, which it always reaches in
+full. A master key can name any of the account's other Projects (via a
+`project` argument, a slug); an app key can only reach a Project it's been
+explicitly granted (`read` or `full`, via `project_grant_key`) beyond its
+own home Project. Naming a Project the key can't reach fails as
+`insufficient_scope`, never a not-found error. Most agents never need to
+think about Projects at all — every tool defaults to the key's own home
+Project when the optional `project` argument is omitted.
+
 ## Master keys vs. app keys
 
 The key `login` mints is a **master** key: full authority over the account
@@ -40,7 +54,7 @@ When spinning up a **sub-agent** that only needs part of that authority
 links), mint it a scoped **app** key instead of handing out the master key:
 
 ```
-key_create_app({ name: "file-worker", apps: ["serve"] })
+key_create_app({ name: "file-worker", apps: ["serve"], project: "acme" })
 ```
 
 `apps` is a non-empty subset of `page`, `serve`, `link`, `base` — pick only
@@ -68,9 +82,14 @@ file) — `sherpage_publish`, `sherpage_list`, `sherpage_get`,
 optionally custom-aliased URL) — `link_list`, `link_get`, `link_set_access`,
 `link_set_alias`, `link_delete`.
 
-**Databases** (`sherbase` — dedicated Postgres projects) —
-`base_create_project`, `base_list_projects`, `base_run_sql`,
-`base_drop_project`.
+**Databases** (`sherbase` — dedicated Postgres databases) —
+`base_create_database`, `base_list_databases`, `base_run_sql`,
+`base_drop_database`.
+
+**Projects** (`platform` — dashboard organization and access control; see
+above) — `project_create`, `project_list`, `project_get`, `project_set`,
+`project_resources`, `project_delete`, `project_assign`,
+`project_unassign`, `project_grant_key`, `project_revoke_grant`.
 
 **Keys and identity** (`platform` — master-only) — `key_create_app`,
 `key_list`, `key_revoke`, `oauth_list_clients`, `oauth_create_client`.
@@ -98,7 +117,7 @@ link cascades to and permanently deletes the underlying sherpage page or
 sherserve file *and its storage* — not just the short URL. There is no
 "unwrap the link but keep the file" operation. `link_delete` (like every
 other destructive tool here — `sherpage_delete`, `store_delete_object`,
-`base_drop_project`, `key_revoke`) requires a `confirm` argument that must
+`base_drop_database`, `key_revoke`) requires a `confirm` argument that must
 exactly match the id/slug/code being deleted; treat that as a genuine
 confirmation step, not boilerplate to fill in automatically.
 
@@ -112,10 +131,10 @@ encoding: "utf8" }] })`. Returns the `p.shebang.pro` URL immediately.
 "/local/path/to/file.pdf", access: "password", password: "…" })`. Anyone
 with the URL needs the password to view it.
 
-**Spin up a database.** `base_create_project({ slug: "my-project" })` —
+**Spin up a database.** `base_create_database({ slug: "my-database" })` —
 returns a connection string and password shown exactly once; save them.
-Then `base_run_sql({ slug, sql: "create table ..." })` to set up schema, run
-as that project's own role (not a shared superuser).
+Then `base_run_sql({ database: slug, sql: "create table ..." })` to set up
+schema, run as that database's own role (not a shared superuser).
 
 **Make a short link with a custom alias.** Links are created automatically
 alongside a page/file publish; find its `code` via `link_list` or

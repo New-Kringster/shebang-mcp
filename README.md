@@ -117,20 +117,40 @@ reminder.
 | `link_set_alias` | Set or clear a custom vanity alias |
 | `link_delete` | Delete a link **and** the page/file it wraps — irreversible |
 
+**Projects** (`platform`, master-only unless noted)
+
+A Project groups your keys, databases, files, links, and pages for
+dashboard organization and access control. A key always reaches its own
+home Project in full; a master key, or an app key holding a grant, can
+also reach another Project (at `read` or `full` level).
+
+| Tool | What it does |
+| --- | --- |
+| `project_create` | Create a new Project (name, tag, color, slug) |
+| `project_list` | List every Project on the account |
+| `project_get` | Get one Project's details by id |
+| `project_set` | Update a Project's name, tag, color, slug, or OAuth client |
+| `project_resources` | List every key, database, file, link, and page in a Project |
+| `project_delete` | Permanently delete a Project by id — irreversible |
+| `project_assign` | Attribute an existing resource to a Project |
+| `project_unassign` | Move a resource to your account's default Project |
+| `project_grant_key` | Grant a key `read` or `full` access to another Project |
+| `project_revoke_grant` | Revoke a key's grant on another Project |
+
 **Databases** (`sherbase`)
 
 | Tool | What it does |
 | --- | --- |
-| `base_create_project` | Provision a new Postgres project (database + role) |
-| `base_list_projects` | List your database projects |
-| `base_run_sql` | Run one SQL statement against a project |
-| `base_drop_project` | Permanently drop a project — irreversible |
+| `base_create_database` | Provision a new Postgres database (database + role) |
+| `base_list_databases` | List your databases |
+| `base_run_sql` | Run one SQL statement against a database |
+| `base_drop_database` | Permanently drop a database — irreversible |
 
 **Keys** (master-only)
 
 | Tool | What it does |
 | --- | --- |
-| `key_create_app` | Mint a scoped app key, typically for a sub-agent |
+| `key_create_app` | Mint a scoped app key, typically for a sub-agent — optionally bound to a Project (`project`, a slug) at birth |
 | `key_list` | List every key on the account (never hashes or plaintext) |
 | `key_revoke` | Permanently revoke a key by id — irreversible |
 
@@ -146,6 +166,53 @@ reminder.
 | --- | --- |
 | `oauth_list_clients` | List registered sherlock OAuth clients |
 | `oauth_create_client` | Register a new OAuth client (returns a one-time secret) |
+
+## Migrating from 0.1.x
+
+0.2.0 renames the App concept to Project and renames the sherbase database
+tools to match. Old tool names still work for one release (registered but
+undocumented — see below), so an already-configured agent doesn't break
+mid-upgrade; update to the new names when convenient.
+
+**Renamed tools:**
+
+| Old (0.1.x) | New (0.2.0) |
+| --- | --- |
+| `app_create` | `project_create` |
+| `app_list` | `project_list` |
+| `app_get` | `project_get` |
+| `app_set` | `project_set` |
+| `app_resources` | `project_resources` |
+| `app_delete` | `project_delete` |
+| `app_assign` | `project_assign` |
+| `app_unassign` | `project_unassign` |
+| `base_list_projects` | `base_list_databases` |
+| `base_create_project` | `base_create_database` |
+| `base_drop_project` | `base_drop_database` |
+
+**Renamed arguments:**
+
+- `base_run_sql`'s first argument is renamed `slug` → `database`. The old
+  `slug` name still works if you pass it instead.
+- `app_assign`/`app_unassign`'s `app_id` argument is renamed `id` on the
+  new `project_assign`/`project_unassign` tools; the old alias tools keep
+  accepting `app_id`.
+- `key_create_app`'s old `app_id` (a Project id) argument still works for
+  one release; prefer its new `project` (a Project slug) argument. Passing
+  both and naming different projects is a `400`.
+
+**New:** every resource tool (`sherpage_*`, `store_*`, `link_*`,
+`base_list_databases`, `base_create_database`) gained an optional
+`project` argument (a Project slug) to act on a Project other than your
+key's home Project, where the underlying platform route supports it.
+`key_create_app` gained an optional `project` argument for the same
+reason. `project_grant_key` and `project_revoke_grant` are new.
+
+**Alias window:** the old `app_*` and `base_list_projects`/
+`base_create_project`/`base_drop_project` names are registered and fully
+callable through 0.2.0, but are no longer documented here or in
+`skills/shebang/SKILL.md` — treat them as deprecated and migrate off them
+before the next release removes them.
 
 ## Env vars
 
