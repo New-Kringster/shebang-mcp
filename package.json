@@ -1,6 +1,6 @@
 {
   "name": "shebang-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Stdio MCP server + CLI for shebang: pages, files, short links, Postgres databases, and OAuth/keys over one federated API. Public client for accounts on shebang.pro.",
   "type": "module",
   "license": "MIT",
@@ -11,7 +11,8 @@
   "main": "src/index.js",
   "files": ["src", "skills", "README.md", "LICENSE"],
   "scripts": {
-    "start": "node src/cli.js"
+    "start": "node src/cli.js",
+    "test": "node --test test/*.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

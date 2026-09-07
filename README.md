@@ -102,7 +102,7 @@ reminder.
 
 | Tool | What it does |
 | --- | --- |
-| `store_upload_file` | Upload a local file as a new object |
+| `store_upload_file` | Upload a local file as a new object (stdio only — see [Hosted MCP](#hosted-mcp)) |
 | `store_list_objects` | List your uploaded objects |
 | `store_get_object` | Get one object's details by slug or id |
 | `store_delete_object` | Permanently delete an object and its file |
@@ -213,6 +213,39 @@ reason. `project_grant_key` and `project_revoke_grant` are new.
 callable through 0.2.0, but are no longer documented here or in
 `skills/shebang/SKILL.md` — treat them as deprecated and migrate off them
 before the next release removes them.
+
+## Migrating from 0.2.x
+
+0.3.0 is an internal refactor — no tool was renamed, added, or removed, no
+argument or result-text changed. Tool registration moved out of
+`src/index.js` into `src/tools.js` (`registerTools(server, apiClient)`),
+and the five near-identical per-service fetch wrappers `index.js` used to
+carry collapsed into one client, `src/api-client.js`
+(`createApiClient({ apiKey, baseUrl })`). `src/index.js` is now a thin
+stdio entry point that resolves the API key/base URL exactly as before
+(env vars, legacy `SHERPAGE_API_KEY` alias, `~/.config/shebang/credentials.json`)
+and wires the two together. Nothing here changes how you install, log in,
+or call this server — it's the same npx command, the same env vars, the
+same 47 tools.
+
+This split is what lets `shebang-mcp` also power a hosted MCP server at
+`https://api.shebang.pro/mcp` — OAuth-authenticated, zero local config —
+alongside this unchanged `SHEBANG_API_KEY`-based stdio server, which
+remains the right choice for local agents and CI.
+
+## Hosted MCP
+
+`https://api.shebang.pro/mcp` runs the same `registerTools` this package
+exports, over the same tool schemas — with one difference: **local file
+paths are not available on the hosted server.** `store_upload_file` reads
+a path off whatever filesystem the MCP server process can see; over
+stdio that's your own machine, but the hosted server runs inside
+shebang's own dash container, so a `path` argument there would name a
+file on shebang's infrastructure, not yours. The hosted endpoint omits
+`store_upload_file` entirely and registers `store_upload_content` in its
+place — upload by supplying the bytes directly (`contentBase64` or
+`text`) instead of a path. Every other tool is identical between the two
+servers.
 
 ## Env vars
 

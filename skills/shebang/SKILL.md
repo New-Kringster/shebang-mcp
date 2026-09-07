@@ -77,6 +77,10 @@ file) — `sherpage_publish`, `sherpage_list`, `sherpage_get`,
 
 **Files** (`sherserve` — single-file uploads) — `store_upload_file`,
 `store_list_objects`, `store_get_object`, `store_delete_object`.
+`store_upload_file` reads a local path and is stdio-only; the hosted MCP
+server (`https://api.shebang.pro/mcp`) has no local filesystem to read
+from, so it registers `store_upload_content` in its place — same upload,
+bytes supplied inline (`contentBase64` or `text`) instead of a path.
 
 **Short links** (`sherlink` — wraps a page or file behind a short,
 optionally custom-aliased URL) — `link_list`, `link_get`, `link_set_access`,
@@ -99,7 +103,7 @@ the platform's fixed address (reply-to your account, on-behalf-of footer
 appended server-side); capped at 10 emails per account per rolling 24
 hours, and app keys get 403 — only a master key can call it.
 
-Read `src/index.js` in this repo for each tool's exact parameters — every
+Read `src/tools.js` in this repo for each tool's exact parameters — every
 tool has a full Zod schema and description string; this table is a map, not
 a substitute for the schema.
 
