@@ -27,11 +27,16 @@ const BASE_URL = "http://test.local";
  * any request not present in the map is answered with a 500 so an
  * unexpected call fails loudly instead of silently returning undefined.
  * @param {Record<string, unknown>} [responses]
- * @param {{ localFilesystem?: boolean }} [options] passed straight through
- *   to registerTools -- lets a caller build a hosted-mode (localFilesystem:
- *   false) server/client pair the same way the dash /api/mcp route does.
+ * @param {{ localFilesystem?: boolean, statuses?: Record<string, number> }} [options] `localFilesystem`
+ *   passed straight through to registerTools -- lets a caller build a
+ *   hosted-mode (localFilesystem: false) server/client pair the same way
+ *   the dash /api/mcp route does. `statuses` (Stage 20, Task 8) maps the
+ *   same "METHOD path" key `responses` uses to a non-200 status code --
+ *   needed to exercise base_reload_schema's 409 handling, since every
+ *   stub before this task only ever needed to return 200.
  */
 async function setup(responses = {}, options = {}) {
+  const { statuses = {}, ...registerOptions } = options;
   const calls = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
@@ -50,14 +55,14 @@ async function setup(responses = {}, options = {}) {
       });
     }
     return new Response(JSON.stringify(responses[key]), {
-      status: 200,
+      status: statuses[key] ?? 200,
       headers: { "content-type": "application/json" },
     });
   };
 
   const apiClient = createApiClient({ apiKey: API_KEY, baseUrl: BASE_URL });
   const server = new McpServer({ name: "shebang-test", version: "0.0.0" });
-  registerTools(server, apiClient, options);
+  registerTools(server, apiClient, registerOptions);
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "smoke-test-client", version: "0.0.0" });
@@ -179,11 +184,11 @@ test("app_list — hidden alias for project_list, reaches the same handler", asy
   }
 });
 
-test("registerTools defaults to localFilesystem: true — store_upload_file present, store_upload_content absent, stdio's 47 tools unchanged", async () => {
+test("registerTools defaults to localFilesystem: true — store_upload_file present, store_upload_content absent, stdio's 50 tools (47 + base_rotate_secret/base_enable_api/base_reload_schema)", async () => {
   const { client, teardown } = await setup();
   try {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 47);
+    assert.equal(tools.length, 50);
     const names = tools.map((t) => t.name);
     assert.ok(names.includes("store_upload_file"), "store_upload_file must remain registered for the stdio server");
     assert.ok(!names.includes("store_upload_content"), "store_upload_content is hosted-only, must not appear by default");
@@ -192,11 +197,11 @@ test("registerTools defaults to localFilesystem: true — store_upload_file pres
   }
 });
 
-test("registerTools({ localFilesystem: false }) — store_upload_file absent, store_upload_content present, still 47 tools total", async () => {
+test("registerTools({ localFilesystem: false }) — store_upload_file absent, store_upload_content present, still 50 tools total", async () => {
   const { client, teardown } = await setup({}, { localFilesystem: false });
   try {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 47);
+    assert.equal(tools.length, 50);
     const names = tools.map((t) => t.name);
     assert.ok(!names.includes("store_upload_file"), "store_upload_file must never be reachable in hosted mode (no disk access)");
     assert.ok(names.includes("store_upload_content"));
@@ -259,6 +264,146 @@ test("sherpage_delete — confirm-guard rejection never calls the client", async
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /confirm must exactly match id/);
     assert.equal(calls.length, 0, "confirm mismatch must reject before any HTTP call");
+  } finally {
+    await teardown();
+  }
+});
+
+// Stage 20 (Task 8): Data API fields on base_create_database, and the
+// three new tools -- base_rotate_secret, base_enable_api,
+// base_reload_schema.
+
+test("base_create_database — POST /api/sherbase/v1/databases, prints the new Data API fields and the secret once", async () => {
+  const { client, calls, teardown } = await setup({
+    "POST /api/sherbase/v1/databases": {
+      project: {
+        slug: "myapp",
+        dbName: "base_myapp",
+        roleName: "base_myapp",
+        password: "pw123",
+        connection: { pooler: "postgres://base_myapp:pw123@host:6432/base_myapp" },
+        api_url: "https://api.shebang.pro/db/myapp",
+        publishable_key: "sb_publishable_myapp_abc",
+        api_enabled: true,
+        secret_key: "sb_secret_myapp_xyz",
+      },
+    },
+  });
+  try {
+    const result = await client.callTool({ name: "base_create_database", arguments: { slug: "myapp" } });
+    assert.equal(result.isError, undefined);
+    assertSingleCall(calls, "POST", "/api/sherbase/v1/databases");
+    assert.deepEqual(JSON.parse(calls[0].body), { slug: "myapp" });
+    const text = result.content[0].text;
+    assert.match(text, /Data API: https:\/\/api\.shebang\.pro\/db\/myapp/);
+    assert.match(text, /publishable key: sb_publishable_myapp_abc/);
+    assert.match(text, /secret key: sb_secret_myapp_xyz/);
+    assert.match(text, /password and secret key are.*shown once/s);
+  } finally {
+    await teardown();
+  }
+});
+
+test("base_rotate_secret — POST .../secret with a confirm body, prints the new secret once", async () => {
+  const { client, calls, teardown } = await setup({
+    "POST /api/sherbase/v1/databases/myapp/secret": { secret_key: "sb_secret_myapp_new" },
+  });
+  try {
+    const result = await client.callTool({
+      name: "base_rotate_secret",
+      arguments: { database: "myapp", confirm: "myapp" },
+    });
+    assert.equal(result.isError, undefined);
+    assertSingleCall(calls, "POST", "/api/sherbase/v1/databases/myapp/secret");
+    assert.deepEqual(JSON.parse(calls[0].body), { confirm: "myapp" });
+    assert.match(result.content[0].text, /New secret key: sb_secret_myapp_new/);
+    assert.match(result.content[0].text, /old secret key stops working immediately/);
+  } finally {
+    await teardown();
+  }
+});
+
+test("base_rotate_secret — confirm-guard rejection never calls the client", async () => {
+  const { client, calls, teardown } = await setup({});
+  try {
+    const result = await client.callTool({
+      name: "base_rotate_secret",
+      arguments: { database: "myapp", confirm: "wrong-value" },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /confirm must exactly match database/);
+    assert.equal(calls.length, 0, "confirm mismatch must reject before any HTTP call");
+  } finally {
+    await teardown();
+  }
+});
+
+test("base_enable_api — POST .../enable, prints api_url/publishable_key and the secret once when newly created", async () => {
+  const { client, calls, teardown } = await setup({
+    "POST /api/sherbase/v1/databases/myapp/enable": {
+      slug: "myapp",
+      api_url: "https://api.shebang.pro/db/myapp",
+      publishable_key: "sb_publishable_myapp_abc",
+      api_enabled: true,
+      secret_key: "sb_secret_myapp_xyz",
+    },
+  });
+  try {
+    const result = await client.callTool({ name: "base_enable_api", arguments: { database: "myapp" } });
+    assert.equal(result.isError, undefined);
+    assertSingleCall(calls, "POST", "/api/sherbase/v1/databases/myapp/enable");
+    const text = result.content[0].text;
+    assert.match(text, /Enabled the Data API for "myapp"/);
+    assert.match(text, /Data API: https:\/\/api\.shebang\.pro\/db\/myapp/);
+    assert.match(text, /publishable key: sb_publishable_myapp_abc/);
+    assert.match(text, /secret key: sb_secret_myapp_xyz/);
+  } finally {
+    await teardown();
+  }
+});
+
+test("base_enable_api — idempotent re-run omits secret_key from the message when the API already returns none", async () => {
+  const { client, teardown } = await setup({
+    "POST /api/sherbase/v1/databases/myapp/enable": {
+      slug: "myapp",
+      api_url: "https://api.shebang.pro/db/myapp",
+      publishable_key: "sb_publishable_myapp_abc",
+      api_enabled: true,
+    },
+  });
+  try {
+    const result = await client.callTool({ name: "base_enable_api", arguments: { database: "myapp" } });
+    assert.equal(result.isError, undefined);
+    assert.doesNotMatch(result.content[0].text, /secret key:/);
+  } finally {
+    await teardown();
+  }
+});
+
+test("base_reload_schema — POST .../reload", async () => {
+  const { client, calls, teardown } = await setup({
+    "POST /api/sherbase/v1/databases/myapp/reload": { ok: true },
+  });
+  try {
+    const result = await client.callTool({ name: "base_reload_schema", arguments: { database: "myapp" } });
+    assert.equal(result.isError, undefined);
+    assertSingleCall(calls, "POST", "/api/sherbase/v1/databases/myapp/reload");
+    assert.match(result.content[0].text, /Reloaded the Data API schema cache for "myapp"/);
+  } finally {
+    await teardown();
+  }
+});
+
+test("base_reload_schema — a 409 from the route (Data API not enabled) maps to a clear enable-first message", async () => {
+  const { client, calls, teardown } = await setup(
+    { "POST /api/sherbase/v1/databases/myapp/reload": { error: "data_api_disabled" } },
+    { statuses: { "POST /api/sherbase/v1/databases/myapp/reload": 409 } },
+  );
+  try {
+    const result = await client.callTool({ name: "base_reload_schema", arguments: { database: "myapp" } });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Enable the Data API first/);
+    assertSingleCall(calls, "POST", "/api/sherbase/v1/databases/myapp/reload");
   } finally {
     await teardown();
   }

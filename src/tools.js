@@ -958,6 +958,10 @@ server.tool(
 async function handleBaseListDatabases({ project }) {
   const query = project ? `?project=${encodeURIComponent(project)}` : "";
   const result = await apiClient.sherbase("GET", `/databases${query}`);
+  // Stage 20 (Task 3): each row now also carries api_url, publishable_key,
+  // api_enabled (never secret_key -- that's create/rotate/enable-only,
+  // shown once). No code change needed here beyond this note: they pass
+  // straight through the JSON stringify below.
   const databases = result.projects ?? [];
   return textResult(JSON.stringify(databases, null, 2));
 }
@@ -966,11 +970,29 @@ async function handleBaseCreateDatabase({ slug, project }) {
   const body = { slug, ...(project !== undefined ? { project } : {}) };
   const result = await apiClient.sherbase("POST", "/databases", body);
   const database = result.project;
+  // Stage 20 (Task 3/5): api_url/publishable_key/api_enabled are always
+  // present; secret_key is present only when this call actually minted a
+  // fresh key pair -- which can still be true even when api_enabled ends
+  // up false (the gateway push failed after the keys were already minted,
+  // task-5-report.md) -- so secret_key is printed whenever present,
+  // independent of api_enabled, to honor the "shown once" contract rather
+  // than silently dropping a secret the caller can never retrieve again.
+  // data_api_error, when present, surfaces as a warning rather than
+  // failing the whole tool call, matching the API's own non-fatal
+  // handling of a gateway-push failure.
+  const dataApiLines =
+    (database.api_url ? `Data API: ${database.api_url}\n` : "") +
+    (database.publishable_key ? `publishable key: ${database.publishable_key}\n` : "") +
+    (database.secret_key ? `secret key: ${database.secret_key}\n` : "") +
+    (database.data_api_error
+      ? `Data API warning: ${database.data_api_error} — retry with base_enable_api.\n`
+      : "");
   return textResult(
     `Created database "${database.slug}" — database: ${database.dbName}, role: ${database.roleName}\n` +
       `password: ${database.password}\n` +
       `connection string: ${database.connection.pooler}\n` +
-      `This password and connection string are shown once and cannot be retrieved again — save them now.`,
+      dataApiLines +
+      `This password${database.secret_key ? " and secret key are" : " and connection string are"} shown once and cannot be retrieved again — save them now.`,
   );
 }
 
@@ -1101,6 +1123,97 @@ server.tool(
     try {
       return await handleBaseDropDatabase({ slug, confirm });
     } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+/** Stage 20 (Task 8): the three new sherbase Data API MCP tools --
+ *  base_rotate_secret, base_enable_api, base_reload_schema. All three
+ *  take the optional project param every other base_* tool does, for
+ *  the same reason link_set_alias/link_delete/sherpage_delete do even
+ *  though the target route resolves ownership by slug alone: consistency
+ *  of shape across the tool surface, not because the route currently
+ *  reads it back out. */
+
+server.tool(
+  "base_rotate_secret",
+  "Rotate a sherbase database's Data API secret key. The old secret stops working immediately. Requires " +
+    "confirm to exactly match database.",
+  {
+    database: z.string().min(1).describe("Database slug"),
+    confirm: z.string().min(1).describe("Must exactly equal database to confirm the rotation"),
+    project: projectQueryParamSchema,
+  },
+  async ({ database, confirm, project }) => {
+    try {
+      if (confirm !== database) {
+        throw new ToolError(`confirm must exactly match database ("${database}") to rotate its secret key`);
+      }
+      const body = { confirm, ...(project !== undefined ? { project } : {}) };
+      const result = await apiClient.sherbase("POST", `/databases/${encodeURIComponent(database)}/secret`, body);
+      return textResult(
+        `Rotated the secret key for "${database}".\nNew secret key: ${result.secret_key}\n` +
+          `This is shown once and cannot be retrieved again — save it now. The old secret key stops working immediately.` +
+          (result.data_api_error ? `\nWarning: ${result.data_api_error}` : ""),
+      );
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "base_enable_api",
+  "Enable the Data API (PostgREST + Supabase-shaped auth) for a database created before it had one. New " +
+    "databases have this on by default. Returns api_url, publishable_key, and (if newly created) secret_key " +
+    "once. Idempotent -- re-running it against an already-enabled database returns the existing publishable " +
+    "key and no new secret.",
+  {
+    database: z.string().min(1).describe("Database slug"),
+    project: projectQueryParamSchema,
+  },
+  async ({ database, project }) => {
+    try {
+      const body = project !== undefined ? { project } : undefined;
+      const result = await apiClient.sherbase("POST", `/databases/${encodeURIComponent(database)}/enable`, body);
+      const lines = [
+        `Enabled the Data API for "${database}".`,
+        `Data API: ${result.api_url}`,
+        `publishable key: ${result.publishable_key}`,
+      ];
+      if (result.secret_key) {
+        lines.push(`secret key: ${result.secret_key}`);
+        lines.push("This secret key is shown once and cannot be retrieved again — save it now.");
+      }
+      if (result.data_api_error) {
+        lines.push(`Warning: ${result.data_api_error}`);
+      }
+      return textResult(lines.join("\n"));
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.tool(
+  "base_reload_schema",
+  "Reload a sherbase database's Data API (PostgREST) schema cache. Needed after DDL run outside " +
+    "base_run_sql (e.g. over the direct/pooler Postgres connection) so new or changed tables/columns " +
+    "become visible to the Data API without waiting for the gateway to restart.",
+  {
+    database: z.string().min(1).describe("Database slug"),
+    project: projectQueryParamSchema,
+  },
+  async ({ database, project }) => {
+    try {
+      const body = project !== undefined ? { project } : undefined;
+      await apiClient.sherbase("POST", `/databases/${encodeURIComponent(database)}/reload`, body);
+      return textResult(`Reloaded the Data API schema cache for "${database}".`);
+    } catch (err) {
+      if (err instanceof ToolError && err.status === 409) {
+        return errorResult(new ToolError(`Enable the Data API first for "${database}" (use base_enable_api) before reloading its schema.`));
+      }
       return errorResult(err);
     }
   },

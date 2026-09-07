@@ -145,6 +145,9 @@ also reach another Project (at `read` or `full` level).
 | `base_list_databases` | List your databases |
 | `base_run_sql` | Run one SQL statement against a database |
 | `base_drop_database` | Permanently drop a database — irreversible |
+| `base_rotate_secret` | Rotate a database's Data API secret key — old one stops working immediately |
+| `base_enable_api` | Enable the Data API for a database created before it had one |
+| `base_reload_schema` | Reload a database's Data API schema cache after DDL run outside `base_run_sql` |
 
 **Keys** (master-only)
 
@@ -166,6 +169,48 @@ also reach another Project (at `read` or `full` level).
 | --- | --- |
 | `oauth_list_clients` | List registered sherlock OAuth clients |
 | `oauth_create_client` | Register a new OAuth client (returns a one-time secret) |
+
+## Data API
+
+Every database created with `base_create_database` gets a Supabase-shaped
+Data API on by default — a PostgREST endpoint plus sherlock-backed auth —
+at `https://api.shebang.pro/db/<slug>`. Databases created before this
+existed don't have it until you call `base_enable_api {database}`, which
+returns the same fields `base_create_database` does: `api_url`,
+`publishable_key`, and (only the first time) `secret_key`, shown once and
+never retrievable again.
+
+- **`publishable_key`** (`sb_publishable_…`) is safe to ship in client
+  code — pair it with a signed-in user's sherlock session for row-level
+  security to apply per-user.
+- **`secret_key`** (`sb_secret_…`) bypasses row-level security entirely —
+  server-side only, never in a browser. Lost or compromised, rotate it
+  with `base_rotate_secret {database, confirm}` (`confirm` must exactly
+  equal `database`); the old secret stops working immediately.
+
+Point `supabase-js` at it like a normal Supabase project:
+
+```js
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  "https://api.shebang.pro/db/<slug>",
+  "sb_publishable_<slug>_…",
+);
+
+// Sign in through sherlock — the platform's own auth — same as any
+// Supabase Auth call:
+await supabase.auth.signInWithPassword({ email, password });
+
+const { data, error } = await supabase.from("todos").select("*");
+```
+
+If a table or column you just created over `base_run_sql`, the direct
+connection, or the pooler isn't showing up on the Data API yet, call
+`base_reload_schema {database}` to refresh PostgREST's schema cache
+without waiting for the gateway to restart on its own. Calling it before
+the Data API is enabled returns a clear "enable the Data API first"
+error instead of a confusing one.
 
 ## Migrating from 0.1.x
 
@@ -232,6 +277,17 @@ This split is what lets `shebang-mcp` also power a hosted MCP server at
 `https://api.shebang.pro/mcp` — OAuth-authenticated, zero local config —
 alongside this unchanged `SHEBANG_API_KEY`-based stdio server, which
 remains the right choice for local agents and CI.
+
+## Migrating from 0.3.x
+
+0.4.0 is additive — no tool was renamed or removed. `base_list_databases`
+and `base_create_database` gain `api_url`, `publishable_key`, and
+`api_enabled` fields on every database they return (`base_create_database`
+additionally returns `secret_key` once, on a newly created database's
+first Data API key pair). Three new tools cover the sherbase Data API
+this release ships: `base_rotate_secret`, `base_enable_api`, and
+`base_reload_schema` — see [Data API](#data-api). Every 0.3.x call keeps
+working unchanged.
 
 ## Hosted MCP
 

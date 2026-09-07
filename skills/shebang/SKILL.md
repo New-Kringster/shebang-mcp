@@ -88,7 +88,22 @@ optionally custom-aliased URL) — `link_list`, `link_get`, `link_set_access`,
 
 **Databases** (`sherbase` — dedicated Postgres databases) —
 `base_create_database`, `base_list_databases`, `base_run_sql`,
-`base_drop_database`.
+`base_drop_database`, `base_rotate_secret`, `base_enable_api`,
+`base_reload_schema`.
+
+Every database also gets a Supabase-shaped Data API (PostgREST + sherlock
+auth) at `api.shebang.pro/db/<slug>`, on by default for new databases —
+`base_create_database`/`base_list_databases` return its `api_url` and
+`publishable_key` (safe for client code; pair with a signed-in sherlock
+session for row-level security) alongside the database's usual
+connection details, plus a `secret_key` shown once (server-side only,
+bypasses row-level security). `base_enable_api` turns it on for a
+database created before this existed; `base_rotate_secret` rotates a
+compromised or lost secret key (old one stops working immediately,
+`confirm` must match `database`); `base_reload_schema` refreshes the
+Data API's schema cache after DDL run outside `base_run_sql` (e.g. over
+the direct connection) so new tables/columns show up without waiting for
+a restart.
 
 **Projects** (`platform` — dashboard organization and access control; see
 above) — `project_create`, `project_list`, `project_get`, `project_set`,
@@ -121,9 +136,10 @@ link cascades to and permanently deletes the underlying sherpage page or
 sherserve file *and its storage* — not just the short URL. There is no
 "unwrap the link but keep the file" operation. `link_delete` (like every
 other destructive tool here — `sherpage_delete`, `store_delete_object`,
-`base_drop_database`, `key_revoke`) requires a `confirm` argument that must
-exactly match the id/slug/code being deleted; treat that as a genuine
-confirmation step, not boilerplate to fill in automatically.
+`base_drop_database`, `base_rotate_secret`, `key_revoke`) requires a
+`confirm` argument that must exactly match the id/slug/code/database
+being deleted or rotated; treat that as a genuine confirmation step, not
+boilerplate to fill in automatically.
 
 ## Common recipes
 
