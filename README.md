@@ -90,13 +90,6 @@ Two dash endpoints back the flow above, both accepting either
   grown `interval`), `access_denied`, `expired_token`, `invalid_grant`,
   `invalid_request`, `unsupported_grant_type`.
 
-**Deprecated:** `POST /api/agent-login/start` and `POST
-/api/agent-login/poll` back the same flow with this project's own
-pre-RFC-8628 field names (`code`/`poll_secret`/`verify_url`,
-always-200-with-a-`status`-field responses). They still work for now but
-are slated for removal in a later cleanup — new integrations should use
-`device_authorization`/`token` above.
-
 ## Key tiers
 
 - **Master** — what `login` mints. Full authority over the account: every
@@ -151,6 +144,20 @@ dashboard organization and access control. A key always reaches its own
 home Project in full; a master key, or an app key holding a grant, can
 also reach another Project (at `read` or `full` level).
 
+### How projects scope your calls
+
+Every tool defaults to the calling key's own home Project — you never have
+to pass `project` for normal use. To target a *different* Project, pass
+`project` (a slug) to that call: a master key can name any of the account's
+other Projects; an app key can only reach one it's been explicitly granted
+`read` or `full` access to via `project_grant_key` (naming one it can't
+reach fails as `insufficient_scope`, never a not-found error, so existence
+is never leaked to a key that can't reach it). Each call is scoped
+independently — passing `project` on one call doesn't change what a later
+call defaults to, so a tool like `link_list` still returns your home
+Project's links unless you pass `project` again on that call too, even
+right after publishing something into a different Project.
+
 | Tool | What it does |
 | --- | --- |
 | `project_create` | Create a new Project (name, tag, color, slug) |
@@ -163,6 +170,12 @@ also reach another Project (at `read` or `full` level).
 | `project_unassign` | Move a resource to your account's default Project |
 | `project_grant_key` | Grant a key `read` or `full` access to another Project |
 | `project_revoke_grant` | Revoke a key's grant on another Project |
+
+`project_create`/`project_set`'s `color` must be one of the platform's
+curated palette, not an arbitrary hex value:
+
+`#ef4444` `#f97316` `#f59e0b` `#84cc16` `#22c55e` `#14b8a6` `#06b6d4`
+`#3b82f6` `#6366f1` `#8b5cf6` `#a855f7` `#ec4899`
 
 **Databases** (`sherbase`)
 
@@ -196,6 +209,20 @@ also reach another Project (at `read` or `full` level).
 | --- | --- |
 | `oauth_list_clients` | List registered sherlock OAuth clients |
 | `oauth_create_client` | Register a new OAuth client (returns a one-time secret) |
+
+## Visibility
+
+Pages and uploaded files default to `access: "private"` — reachable only by
+your own account — whether or not you set `access` at creation. To make one
+public:
+
+- **A page** — `sherpage_set_access({ id, access: "public" })`.
+- **An uploaded file** — via the short link that `store_upload_file`/
+  `store_upload_content` creates for it automatically:
+  `link_set_access({ code_or_id, access: "public" })`.
+
+Or pass `access: "public"` up front, at `sherpage_publish`/`store_upload_file`/
+`store_upload_content` time, to skip the second call.
 
 ## Data API
 
@@ -232,12 +259,34 @@ await supabase.auth.signInWithPassword({ email, password });
 const { data, error } = await supabase.from("todos").select("*");
 ```
 
+### Sign-up for your app's users
+
+Your app's end users sign up through sherlock — the platform's own auth —
+directly via `supabase-js`, never through this MCP server. Two supported
+flows:
+
+- **Email + password**, confirmed with a 6-digit code sent by email (not a
+  confirmation link): `supabase.auth.signUp({ email, password })`, then
+  `supabase.auth.verifyOtp({ email, token: "<6-digit code>", type: "signup" })`.
+- **OTP-only sign-in** (no password at all): `supabase.auth.signInWithOtp({ email })`,
+  then `supabase.auth.verifyOtp({ email, token: "<6-digit code>", type: "email" })`.
+
+The app owner's own shebang.pro account (the one `login` authenticates as)
+is entirely separate from these end users — signing a user up in your
+app's database never touches the owner's platform account.
+
 If a table or column you just created over `base_run_sql`, the direct
 connection, or the pooler isn't showing up on the Data API yet, call
 `base_reload_schema {database}` to refresh PostgREST's schema cache
 without waiting for the gateway to restart on its own. Calling it before
 the Data API is enabled returns a clear "enable the Data API first"
 error instead of a confusing one.
+
+The direct connection and pooler strings shown in the dashboard use
+`sslmode=verify-full` and `sslrootcert=system`. Clients older than libpq
+16 need a CA file instead of `sslrootcert=system`: download the
+[ISRG Root X1 certificate](https://letsencrypt.org/certs/isrgrootx1.pem)
+and use `sslrootcert=<path>`.
 
 ## Migrating from 0.3.x
 
@@ -286,6 +335,13 @@ the tool in the "Use instead" column):
 underlying `GET .../databases` routes) no longer carry the duplicate
 `projects` key — read `databases`, which has carried the identical array
 since 0.2.0.
+
+## 0.5.1
+
+`project_create`/`project_set`'s `color` is now a curated enum with a
+client-side rejection message listing every accepted value, `store_upload_content`
+infers a file extension from `contentType` when the path has none, and this
+README gained the docs noted above (project scoping, visibility, sign-up).
 
 ## Hosted MCP
 

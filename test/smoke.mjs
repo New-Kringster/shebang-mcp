@@ -258,6 +258,141 @@ test("store_upload_content — text content is accepted in place of contentBase6
   }
 });
 
+// dogfood fix (REPORT.md #3): project_create/project_set's `color` is now
+// a zod enum of the platform's curated palette, and api-client.js
+// surfaces a 4xx body's `message` alongside `error` so a server-side
+// rejection (e.g. some other invalid field this schema doesn't already
+// catch) is never a bare, undetailed error code.
+
+test("project_create — a curated-palette color is accepted and sent through as-is", async () => {
+  const { client, calls, teardown } = await setup({
+    "POST /api/platform/v1/projects": {
+      project: { id: "p1", name: "Postcard", tag: "postcard", color: "#3b82f6", slug: "postcard" },
+    },
+  });
+  try {
+    const result = await client.callTool({
+      name: "project_create",
+      arguments: { name: "Postcard", tag: "postcard", color: "#3b82f6", slug: "postcard" },
+    });
+    assert.equal(result.isError, undefined);
+    assertSingleCall(calls, "POST", "/api/platform/v1/projects");
+    assert.deepEqual(JSON.parse(calls[0].body), { name: "Postcard", tag: "postcard", color: "#3b82f6", slug: "postcard" });
+  } finally {
+    await teardown();
+  }
+});
+
+test("project_create — a hex color outside the curated palette is rejected client-side, before any HTTP call", async () => {
+  const { client, calls, teardown } = await setup({});
+  try {
+    const result = await client.callTool({
+      name: "project_create",
+      arguments: { name: "Postcard", tag: "postcard", color: "#e0754a", slug: "postcard" },
+    });
+    assert.equal(result.isError, true);
+    assert.equal(calls.length, 0, "an out-of-palette color must reject before any HTTP call");
+  } finally {
+    await teardown();
+  }
+});
+
+test("project_set — a 400 with both error and message surfaces the detail, not a bare error code (api-client.js merge fix)", async () => {
+  const { client, calls, teardown } = await setup(
+    { "PATCH /api/platform/v1/projects/p1": { error: "invalid_project", message: "slug 'postcard' is already in use" } },
+    { statuses: { "PATCH /api/platform/v1/projects/p1": 400 } },
+  );
+  try {
+    const result = await client.callTool({
+      name: "project_set",
+      arguments: { id: "p1", slug: "postcard" },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /invalid_project/);
+    assert.match(result.content[0].text, /slug 'postcard' is already in use/);
+    assertSingleCall(calls, "PATCH", "/api/platform/v1/projects/p1");
+  } finally {
+    await teardown();
+  }
+});
+
+// dogfood fix (REPORT.md #2): store_upload_content infers a filename
+// extension from contentType when `path`/`slug` don't supply one, and
+// fails client-side (no HTTP call) when neither does.
+
+test("store_upload_content — no path, an extensionless slug: the extension is inferred from contentType", async () => {
+  const { client, calls, teardown } = await setup(
+    {
+      "POST /api/sherserve/v1/objects": {
+        object: { id: "o3", title: "upload", slug: "postcard-abc123-image", access: "private", sizeBytes: 3 },
+        url: "https://f.shebang.pro/postcard-abc123-image",
+      },
+    },
+    { localFilesystem: false },
+  );
+  try {
+    const result = await client.callTool({
+      name: "store_upload_content",
+      arguments: { slug: "postcard-abc123-image", contentBase64: Buffer.from("abc").toString("base64"), contentType: "image/png" },
+    });
+    assert.equal(result.isError, undefined);
+    assertSingleCall(calls, "POST", "/api/sherserve/v1/objects");
+    const file = calls[0].body.get("file");
+    assert.equal(file.name, "postcard-abc123-image.png");
+  } finally {
+    await teardown();
+  }
+});
+
+test("store_upload_content — path already has an extension: used as-is, never overridden by contentType", async () => {
+  const { client, calls, teardown } = await setup(
+    {
+      "POST /api/sherserve/v1/objects": {
+        object: { id: "o4", title: "upload", slug: "up4", access: "private", sizeBytes: 3 },
+        url: "https://f.shebang.pro/up4",
+      },
+    },
+    { localFilesystem: false },
+  );
+  try {
+    const result = await client.callTool({
+      name: "store_upload_content",
+      arguments: {
+        slug: "up4",
+        path: "custom-name.jpg",
+        contentBase64: Buffer.from("abc").toString("base64"),
+        contentType: "image/png",
+      },
+    });
+    assert.equal(result.isError, undefined);
+    assertSingleCall(calls, "POST", "/api/sherserve/v1/objects");
+    const file = calls[0].body.get("file");
+    assert.equal(file.name, "custom-name.jpg");
+  } finally {
+    await teardown();
+  }
+});
+
+test("store_upload_content — no extension anywhere and an unrecognized contentType fails client-side, before any HTTP call", async () => {
+  const { client, calls, teardown } = await setup({}, { localFilesystem: false });
+  try {
+    const result = await client.callTool({
+      name: "store_upload_content",
+      arguments: {
+        slug: "mystery-object",
+        contentBase64: Buffer.from("abc").toString("base64"),
+        contentType: "application/x-custom-blob",
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /path "mystery-object" has no file extension/);
+    assert.match(result.content[0].text, /application\/x-custom-blob/);
+    assert.equal(calls.length, 0, "an unresolvable extension must reject before any HTTP call");
+  } finally {
+    await teardown();
+  }
+});
+
 test("sherpage_delete — confirm-guard rejection never calls the client", async () => {
   const { client, calls, teardown } = await setup({});
   try {

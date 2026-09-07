@@ -41,7 +41,12 @@ explicitly granted (`read` or `full`, via `project_grant_key`) beyond its
 own home Project. Naming a Project the key can't reach fails as
 `insufficient_scope`, never a not-found error. Most agents never need to
 think about Projects at all — every tool defaults to the key's own home
-Project when the optional `project` argument is omitted.
+Project when the optional `project` argument is omitted. Each call is
+scoped independently: passing `project` on one call doesn't change what a
+*later* call defaults to. Publishing a page with `project: "acme"` and
+then calling `link_list` with no `project` still returns your home
+Project's links, not `acme`'s — pass `project: "acme"` again on that call
+too.
 
 ## Master keys vs. app keys
 
@@ -103,7 +108,18 @@ compromised or lost secret key (old one stops working immediately,
 `confirm` must match `database`); `base_reload_schema` refreshes the
 Data API's schema cache after DDL run outside `base_run_sql` (e.g. over
 the direct connection) so new tables/columns show up without waiting for
-a restart.
+a restart. The direct/pooler connection strings use `sslrootcert=system`;
+clients on libpq < 16 need a CA file instead — download the
+[ISRG Root X1 certificate](https://letsencrypt.org/certs/isrgrootx1.pem)
+and pass `sslrootcert=<path>`.
+
+Your app's own end users sign up through sherlock directly via
+`supabase-js`, never through this MCP server: `signUp({ email, password })`
+then `verifyOtp({ email, token: "<6-digit code>", type: "signup" })`
+(sherlock emails a code, not a link), or OTP-only sign-in with
+`signInWithOtp({ email })` then `verifyOtp({ email, token, type: "email" })`.
+The app owner's own shebang.pro account is entirely separate from these
+end users.
 
 **Projects** (`platform` — dashboard organization and access control; see
 above) — `project_create`, `project_list`, `project_get`, `project_set`,
@@ -140,6 +156,15 @@ other destructive tool here — `sherpage_delete`, `store_delete_object`,
 `confirm` argument that must exactly match the id/slug/code/database
 being deleted or rotated; treat that as a genuine confirmation step, not
 boilerplate to fill in automatically.
+
+## Visibility
+
+Pages and uploaded files default to `access: "private"` — reachable only
+by your own account, whether or not you set `access` at creation. Make one
+public with `sherpage_set_access({ id, access: "public" })` for a page, or
+`link_set_access({ code_or_id, access: "public" })` for an uploaded file's
+short link — or pass `access: "public"` up front at publish/upload time to
+skip the second call.
 
 ## Common recipes
 

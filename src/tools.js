@@ -76,6 +76,70 @@ async function resolveProjectId(apiClient, slugOrId) {
   throw new ToolError(`no project found with slug or id "${slugOrId}"`);
 }
 
+/**
+ * store_upload_content has no local filesystem to read an extension
+ * from -- unlike store_upload_file's `path` (a real path on disk),
+ * store_upload_content's `path` is only ever used as a filename hint. The
+ * platform's upload route infers content type from that filename's
+ * extension alone (never from the multipart file's own declared type,
+ * even though contentType is required here) and 415s
+ * "unsupported file type for path '<name>'" when there isn't one --
+ * dogfood REPORT.md #2: a caller who passed a correct `contentType` but
+ * an extensionless `path` (or none at all -- `path` is optional, so the
+ * fallback filename is the object's `slug`, which is essentially never a
+ * recognizable extension) got a 415 that read as if the slug itself were
+ * rejected. Mirrors (not duplicates) the platform's own extension
+ * allow-list in apps/dash/src/lib/sherserve/contentType.ts closely enough
+ * to cover the common cases client-side, so a caller relying on
+ * `contentType` alone still gets a working upload instead of a network
+ * round trip just to fail.
+ */
+const UPLOAD_EXTENSION_BY_CONTENT_TYPE = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/svg+xml": "svg",
+  "text/plain": "txt",
+  "text/html": "html",
+  "application/json": "json",
+  "application/pdf": "pdf",
+  "video/mp4": "mp4",
+  "audio/mpeg": "mp3",
+};
+
+const HAS_FILE_EXTENSION_RE = /\.[a-z0-9]+$/i;
+
+/**
+ * Resolves the filename store_upload_content presents to the platform:
+ * `path`'s basename if given, else `slug`. If that name already has a
+ * recognizable extension, it's used as-is. Otherwise, `contentType` is
+ * looked up in UPLOAD_EXTENSION_BY_CONTENT_TYPE and its extension
+ * appended. When neither the name nor contentType supplies one, this
+ * fails client-side -- before any network call -- naming both the path
+ * (or slug) it checked and the contentType, rather than letting the
+ * platform's 415 surface first.
+ * @param {string | undefined} path
+ * @param {string} slug
+ * @param {string} contentType
+ * @returns {string}
+ */
+function resolveUploadFilename(path, slug, contentType) {
+  const base = path ? basename(path) : slug;
+  if (HAS_FILE_EXTENSION_RE.test(base)) return base;
+
+  const mimeType = contentType.split(";")[0].trim().toLowerCase();
+  const extension = UPLOAD_EXTENSION_BY_CONTENT_TYPE[mimeType];
+  if (!extension) {
+    throw new ToolError(
+      `path "${base}" has no file extension and contentType "${contentType}" isn't a recognized type -- ` +
+        `add a file extension to path (e.g. "${base}.png") or use one of: ` +
+        `${Object.keys(UPLOAD_EXTENSION_BY_CONTENT_TYPE).join(", ")}.`,
+    );
+  }
+  return `${base}.${extension}`;
+}
+
 function textResult(text) {
   return { content: [{ type: "text", text }] };
 }
@@ -433,6 +497,31 @@ async function handleProjectUnassign({ id, resource_type, resource_id }) {
   return textResult(`Unassigned ${resource_type} ${resource_id} — moved to your account's default project.`);
 }
 
+// Mirrors the platform's curated palette (apps/dash/src/lib/projects/palette.ts's
+// APP_COLORS, unchanged) -- dogfood REPORT.md #3: the old schema advertised
+// any `^#[0-9a-f]{6}$` hex, but the platform only ever accepts one of these
+// twelve and 400s (invalid_project) on anything else. Keeping the exact
+// list here means a bad color is rejected client-side, with the full list
+// in the error, instead of a round trip to learn the same thing from a 400.
+const PROJECT_COLORS = [
+  "#ef4444", // red
+  "#f97316", // orange
+  "#f59e0b", // amber
+  "#84cc16", // lime
+  "#22c55e", // green
+  "#14b8a6", // teal
+  "#06b6d4", // cyan
+  "#3b82f6", // blue
+  "#6366f1", // indigo
+  "#8b5cf6", // violet
+  "#a855f7", // purple
+  "#ec4899", // pink
+];
+
+const projectColorSchema = z
+  .enum(PROJECT_COLORS)
+  .describe(`Hex color -- one of the curated palette: ${PROJECT_COLORS.join(", ")}.`);
+
 const projectSlugSchema = z
   .string()
   .min(3)
@@ -447,14 +536,12 @@ const resourceTypeSchema = z.enum(["page", "object", "link", "database", "key"])
 server.tool(
   "project_create",
   "Create a new Project: a user-owned workspace entity (name, tag, color, slug) that keys, databases, files, " +
-    "links, and pages can be attributed to. Requires a master shb_ key.",
+    "links, and pages can be attributed to. `color` must be one of the curated palette (see that field's " +
+    "description), not an arbitrary hex value. Requires a master shb_ key.",
   {
     name: z.string().min(1).max(60).describe("Project display name"),
     tag: z.string().min(1).max(24).describe("Short free-text label shown alongside the project's resources"),
-    color: z
-      .string()
-      .regex(/^#[0-9a-f]{6}$/i)
-      .describe("Hex color, e.g. #4f46e5, rendered wherever the project's resources appear"),
+    color: projectColorSchema,
     slug: projectSlugSchema,
   },
   async ({ name, tag, color, slug }) => {
@@ -508,11 +595,7 @@ server.tool(
     id: z.string().min(1).describe("Project id"),
     name: z.string().min(1).max(60).optional().describe("New display name"),
     tag: z.string().min(1).max(24).optional().describe("New short free-text label"),
-    color: z
-      .string()
-      .regex(/^#[0-9a-f]{6}$/i)
-      .optional()
-      .describe("New hex color, e.g. #4f46e5"),
+    color: projectColorSchema.optional(),
     slug: projectSlugSchema.optional(),
     oauth_client_id: z
       .string()
@@ -1074,7 +1157,11 @@ if (!localFilesystem) {
       path: z
         .string()
         .optional()
-        .describe("Filename to associate with the upload (used for the object's default title); no filesystem access occurs"),
+        .describe(
+          "Filename to associate with the upload (used for the object's default title); no filesystem access occurs. " +
+            "If it has no file extension, one is inferred from contentType (e.g. image/png -> .png); when that also " +
+            "fails, add an extension here.",
+        ),
       slug: z.string().min(1).describe("URL slug for the new object"),
       contentBase64: z.string().optional().describe("Base64-encoded file bytes to upload; exactly one of contentBase64/text is required"),
       text: z.string().optional().describe("Plain-text content to upload; exactly one of contentBase64/text is required"),
@@ -1099,9 +1186,10 @@ if (!localFilesystem) {
           throw new ToolError("provide only one of contentBase64 or text, not both");
         }
         const bytes = contentBase64 !== undefined ? Buffer.from(contentBase64, "base64") : Buffer.from(text, "utf8");
+        const filename = resolveUploadFilename(path, slug, contentType);
 
         const form = new FormData();
-        form.append("file", new Blob([bytes], { type: contentType }), path ? basename(path) : slug);
+        form.append("file", new Blob([bytes], { type: contentType }), filename);
         form.append("slug", slug);
         if (title !== undefined) form.append("title", title);
         if (access !== undefined) form.append("access", access);

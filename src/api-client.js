@@ -80,7 +80,22 @@ export function createApiClient({ apiKey, baseUrl, authorizationHeader }) {
     }
 
     if (!response.ok) {
-      const errorField = data && typeof data === "object" && "error" in data ? data.error : JSON.stringify(data);
+      // shebang: dogfood fix (REPORT.md #3) -- most of the platform's 4xx
+      // bodies are `{ error: "<code>", message: "<detail for a human>" }`
+      // (e.g. project_create's invalid_project carries the actual allowed-
+      // color list in `message`); this used to surface only `data.error`
+      // ("invalid_project"), dropping the one field that explained why.
+      // Both are included when present; either alone still works exactly
+      // as before.
+      const isObject = data && typeof data === "object";
+      const code = isObject && "error" in data ? data.error : undefined;
+      const detail = isObject && typeof data.message === "string" ? data.message : undefined;
+      const errorField =
+        code !== undefined && detail !== undefined
+          ? `${code}: ${detail}`
+          : code !== undefined
+            ? code
+            : (detail ?? JSON.stringify(data));
       throw new ToolError(`${service} API error ${response.status}: ${errorField}`, { status: response.status, data });
     }
     return data;
