@@ -361,11 +361,10 @@ server.tool(
   },
 );
 
-/** Shared implementations behind every project_* tool and its hidden
- *  app_* alias (one function per tool, registered under both names, each
- *  alias marked with a "Hidden alias" comment above it) — kept as shared
- *  functions so the alias registration below is a one-line body instead of
- *  a duplicated implementation per pair. */
+/** Implementations behind every project_* tool. The one-release `app_*`
+ *  aliases (Stage 17/19) and key_create_app's `app_id` argument alias are
+ *  gone as of 0.5.0 (Stage 21, Task 4) — see README.md's 0.5.0 note for
+ *  the full removed-name list. */
 
 async function handleProjectCreate({ name, tag, color, slug }) {
   const result = await apiClient.platform("POST", "/projects", { name, tag, color, slug });
@@ -428,8 +427,8 @@ async function handleProjectUnassign({ id, resource_type, resource_id }) {
   // project — `[id]` in the path is only validated as well-formed, never
   // consulted for the write (Task 5's design: there is no more "unassign
   // to null" now that project_id is NOT NULL everywhere). `id` is kept as
-  // this tool's argument anyway, matching project_assign's shape and the
-  // old app_unassign's app_id, even though the server ignores it.
+  // this tool's argument anyway, matching project_assign's shape, even
+  // though the server ignores it.
   await apiClient.platform("POST", `/projects/${encodeURIComponent(id)}/unassign`, { resource_type, resource_id });
   return textResult(`Unassigned ${resource_type} ${resource_id} — moved to your account's default project.`);
 }
@@ -467,27 +466,6 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md.
-server.tool(
-  "app_create",
-  "Deprecated alias for project_create.",
-  {
-    name: z.string().min(1).max(60).describe("Project display name"),
-    tag: z.string().min(1).max(24).describe("Short free-text label shown alongside the project's resources"),
-    color: z
-      .string()
-      .regex(/^#[0-9a-f]{6}$/i)
-      .describe("Hex color, e.g. #4f46e5, rendered wherever the project's resources appear"),
-    slug: projectSlugSchema,
-  },
-  async ({ name, tag, color, slug }) => {
-    try {
-      return await handleProjectCreate({ name, tag, color, slug });
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 server.tool(
   "project_list",
@@ -503,19 +481,6 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md.
-server.tool(
-  "app_list",
-  "Deprecated alias for project_list.",
-  {},
-  async () => {
-    try {
-      return await handleProjectList();
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 server.tool(
   "project_get",
@@ -534,21 +499,6 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md.
-server.tool(
-  "app_get",
-  "Deprecated alias for project_get.",
-  {
-    id: z.string().min(1).describe("Project id"),
-  },
-  async ({ id }) => {
-    try {
-      return await handleProjectGet({ id });
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 server.tool(
   "project_set",
@@ -579,33 +529,6 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md.
-server.tool(
-  "app_set",
-  "Deprecated alias for project_set.",
-  {
-    id: z.string().min(1).describe("Project id"),
-    name: z.string().min(1).max(60).optional().describe("New display name"),
-    tag: z.string().min(1).max(24).optional().describe("New short free-text label"),
-    color: z
-      .string()
-      .regex(/^#[0-9a-f]{6}$/i)
-      .optional()
-      .describe("New hex color, e.g. #4f46e5"),
-    oauth_client_id: z
-      .string()
-      .nullable()
-      .optional()
-      .describe("Attach an existing sherlock OAuth client id (display/link only, not enforced), or null to detach"),
-  },
-  async ({ id, name, tag, color, oauth_client_id }) => {
-    try {
-      return await handleProjectSet({ id, name, tag, color, oauth_client_id });
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 server.tool(
   "project_resources",
@@ -624,21 +547,6 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md.
-server.tool(
-  "app_resources",
-  "Deprecated alias for project_resources.",
-  {
-    id: z.string().min(1).describe("Project id"),
-  },
-  async ({ id }) => {
-    try {
-      return await handleProjectResources({ id });
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 server.tool(
   "project_delete",
@@ -663,26 +571,6 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md.
-server.tool(
-  "app_delete",
-  "Deprecated alias for project_delete.",
-  {
-    id: z.string().min(1).describe("Project id to delete"),
-    confirm: z.string().min(1).describe("Must exactly equal id to confirm the delete"),
-    move_to: z
-      .string()
-      .optional()
-      .describe("Slug of another of this account's projects to move this project's contents into first"),
-  },
-  async ({ id, confirm, move_to }) => {
-    try {
-      return await handleProjectDelete({ id, confirm, move_to });
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 server.tool(
   "project_assign",
@@ -701,25 +589,6 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md. Kept the
-// old app_id argument name (rather than id) so an already-configured
-// agent's call shape doesn't break mid-release.
-server.tool(
-  "app_assign",
-  "Deprecated alias for project_assign.",
-  {
-    app_id: z.string().min(1).describe("Project id to assign the resource to"),
-    resource_type: resourceTypeSchema,
-    resource_id: z.string().min(1).describe("Resource id"),
-  },
-  async ({ app_id, resource_type, resource_id }) => {
-    try {
-      return await handleProjectAssign({ id: app_id, resource_type, resource_id });
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 server.tool(
   "project_unassign",
@@ -739,25 +608,6 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md. Kept the
-// old app_id argument name (rather than id) so an already-configured
-// agent's call shape doesn't break mid-release.
-server.tool(
-  "app_unassign",
-  "Deprecated alias for project_unassign.",
-  {
-    app_id: z.string().min(1).describe("Project id to unassign the resource from"),
-    resource_type: resourceTypeSchema,
-    resource_id: z.string().min(1).describe("Resource id"),
-  },
-  async ({ app_id, resource_type, resource_id }) => {
-    try {
-      return await handleProjectUnassign({ id: app_id, resource_type, resource_id });
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 server.tool(
   "project_grant_key",
@@ -818,27 +668,19 @@ server.tool(
       .string()
       .optional()
       .describe("Optional Project slug to bind this key to, so everything it creates is auto-attributed to that Project"),
-    // Deprecated for one release (commit decfe7b's server-side alias) —
-    // intentionally left out of this describe()'s prose and out of
-    // README/SKILL.md, same "undocumented but callable" treatment as
-    // every other alias in this file; unlike those, it lives inside this
-    // one tool's schema rather than a second server.tool() registration,
-    // since key_create_app itself isn't renamed.
-    app_id: z.string().min(1).optional(),
   },
-  async ({ name, apps, project, app_id }) => {
+  async ({ name, apps, project }) => {
     try {
       // The platform /keys route resolves `project` (a slug) itself
       // server-side — no client-side resolveProjectId round trip needed
       // here, unlike project_grant_key/project_revoke_grant, whose target
-      // routes are id-addressed. `app_id`, if given, is forwarded
-      // unchanged (the server validates ownership); if both are given and
-      // disagree, the server's 400 invalid_body surfaces unchanged.
+      // routes are id-addressed. The one-release `app_id` argument alias
+      // (Stage 17/19) is gone as of 0.5.0 (Stage 21, Task 4) — the route
+      // now 400s invalid_body if a caller still sends it.
       const body = {
         name,
         apps,
         ...(project !== undefined ? { project } : {}),
-        ...(app_id !== undefined ? { app_id } : {}),
       };
       const result = await apiClient.platform("POST", "/keys", body);
       const projectLine = result.project ? `, project: ${result.project}` : "";
@@ -949,11 +791,11 @@ server.tool(
   },
 );
 
-/** Shared implementations behind base_list_databases/base_create_database/
- *  base_drop_database and their hidden base_list_projects/
- *  base_create_project/base_drop_project aliases — see the project_* doc
- *  comment above for why this shape is used. base_run_sql keeps its name
- *  (per the design doc) so it needs no alias/shared-handler split. */
+/** Implementations behind base_list_databases/base_create_database/
+ *  base_drop_database. The one-release `base_*_project` aliases (Stage
+ *  17/19) and base_run_sql's `slug` argument alias are gone as of 0.5.0
+ *  (Stage 21, Task 4) — see README.md's 0.5.0 note for the full
+ *  removed-name list. */
 
 async function handleBaseListDatabases({ project }) {
   const query = project ? `?project=${encodeURIComponent(project)}` : "";
@@ -961,8 +803,9 @@ async function handleBaseListDatabases({ project }) {
   // Stage 20 (Task 3): each row now also carries api_url, publishable_key,
   // api_enabled (never secret_key -- that's create/rotate/enable-only,
   // shown once). No code change needed here beyond this note: they pass
-  // straight through the JSON stringify below.
-  const databases = result.projects ?? [];
+  // straight through the JSON stringify below. 0.5.0 (Stage 21, Task 4):
+  // reads `databases`, not the removed `projects` alias.
+  const databases = result.databases ?? [];
   return textResult(JSON.stringify(databases, null, 2));
 }
 
@@ -1021,21 +864,6 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md.
-server.tool(
-  "base_list_projects",
-  "Deprecated alias for base_list_databases.",
-  {
-    project: projectQueryParamSchema,
-  },
-  async ({ project }) => {
-    try {
-      return await handleBaseListDatabases({ project });
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 server.tool(
   "base_create_database",
@@ -1055,37 +883,18 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md.
-server.tool(
-  "base_create_project",
-  "Deprecated alias for base_create_database.",
-  {
-    slug: z.string().min(1).describe("URL-safe database slug; used to name the database and role"),
-    project: projectQueryParamSchema,
-  },
-  async ({ slug, project }) => {
-    try {
-      return await handleBaseCreateDatabase({ slug, project });
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 server.tool(
   "base_run_sql",
   "Run a single SQL statement against a sherbase database, as that database's own role. Returns rows, row " +
     "count, and field names as JSON.",
   {
-    database: z.string().min(1).optional().describe("Database slug"),
-    slug: z.string().min(1).optional().describe("Deprecated alias for database"),
+    database: z.string().min(1).describe("Database slug"),
     sql: z.string().min(1).describe("A single SQL statement to execute"),
   },
-  async ({ database, slug, sql }) => {
+  async ({ database, sql }) => {
     try {
-      const dbSlug = database ?? slug;
-      if (!dbSlug) throw new ToolError("either database or slug is required");
-      const result = await apiClient.sherbase("POST", `/databases/${encodeURIComponent(dbSlug)}/query`, { sql });
+      const result = await apiClient.sherbase("POST", `/databases/${encodeURIComponent(database)}/query`, { sql });
       const { rows, rowCount, fields } = result;
       return textResult(JSON.stringify({ rows, rowCount, fields }, null, 2));
     } catch (err) {
@@ -1111,22 +920,6 @@ server.tool(
   },
 );
 
-// Hidden alias — one release, not documented in README/SKILL.md.
-server.tool(
-  "base_drop_project",
-  "Deprecated alias for base_drop_database.",
-  {
-    slug: z.string().min(1).describe("Database slug to drop"),
-    confirm: z.string().min(1).describe("Must exactly equal slug to confirm the drop"),
-  },
-  async ({ slug, confirm }) => {
-    try {
-      return await handleBaseDropDatabase({ slug, confirm });
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
 
 /** Stage 20 (Task 8): the three new sherbase Data API MCP tools --
  *  base_rotate_secret, base_enable_api, base_reload_schema. All three

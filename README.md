@@ -35,16 +35,21 @@ shorthand above until then.
 
 ## The login flow
 
-`login` starts a device-authorization flow against the shebang platform:
+`login` runs an [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628) device
+authorization flow against the shebang platform:
 
-1. The CLI calls the platform, gets back a short code and a verify URL, and
-   prints both — then tries to open your browser to that URL automatically.
+1. The CLI calls the platform, gets back a short user code and a
+   verification URL, and prints both — then tries to open your browser to
+   that URL automatically.
 2. In the browser, you sign in to your shebang.pro account (if not already)
-   and see a page showing the device name and the same code the terminal
-   printed — check they match, then click **Approve** (or **Deny**).
-3. The CLI has been polling in the background; once approved, it writes the
-   issued key to `~/.config/shebang/credentials.json` (mode `0600`) and
-   prints the key's prefix.
+   and see a page showing the device name and the same user code the
+   terminal printed — check they match, then click **Approve** (or
+   **Deny**).
+3. The CLI has been polling in the background (honouring the server's
+   advertised interval, and backing off further if told to `slow_down`);
+   once approved, it writes the issued key to
+   `~/.config/shebang/credentials.json` (mode `0600`) and prints the key's
+   prefix.
 
 From then on, every harness on that machine that runs this server picks the
 key up automatically — no per-project configuration.
@@ -56,7 +61,7 @@ $ npx -y github:New-Kringster/shebang-mcp login
 
     x 7 w y 6 x 3 a
 
-  https://dash.shebang.pro/authorize-agent?code=x7wy6x3a
+  https://dash.shebang.pro/authorize-agent?user_code=x7wy6x3a
 
 Opening your browser… (if nothing opens, visit the URL above)
 Waiting for approval....
@@ -69,6 +74,28 @@ Your agent can now use shebang.
 `shebang-mcp status` shows the current key's prefix and tier;
 `shebang-mcp logout` deletes the local credentials file (it does **not**
 revoke the key — see below).
+
+### Device flow endpoints
+
+Two dash endpoints back the flow above, both accepting either
+`application/x-www-form-urlencoded` (per the RFC) or JSON:
+
+- `POST /api/agent-login/device_authorization` — `{client_name}` (optional,
+  defaults to `"agent"`) → `{device_code, user_code, verification_uri,
+  verification_uri_complete, expires_in, interval}`.
+- `POST /api/agent-login/token` — `{grant_type:
+  "urn:ietf:params:oauth:grant-type:device_code", device_code}` → `200
+  {access_token, token_type: "shb", scope: "master", expires_in: null}` once,
+  or a `400` with `{error}` ∈ `authorization_pending`, `slow_down` (with a
+  grown `interval`), `access_denied`, `expired_token`, `invalid_grant`,
+  `invalid_request`, `unsupported_grant_type`.
+
+**Deprecated:** `POST /api/agent-login/start` and `POST
+/api/agent-login/poll` back the same flow with this project's own
+pre-RFC-8628 field names (`code`/`poll_secret`/`verify_url`,
+always-200-with-a-`status`-field responses). They still work for now but
+are slated for removal in a later cleanup — new integrations should use
+`device_authorization`/`token` above.
 
 ## Key tiers
 
@@ -212,16 +239,27 @@ without waiting for the gateway to restart on its own. Calling it before
 the Data API is enabled returns a clear "enable the Data API first"
 error instead of a confusing one.
 
-## Migrating from 0.1.x
+## Migrating from 0.3.x
 
-0.2.0 renames the App concept to Project and renames the sherbase database
-tools to match. Old tool names still work for one release (registered but
-undocumented — see below), so an already-configured agent doesn't break
-mid-upgrade; update to the new names when convenient.
+0.4.0 is additive — no tool was renamed or removed. `base_list_databases`
+and `base_create_database` gain `api_url`, `publishable_key`, and
+`api_enabled` fields on every database they return (`base_create_database`
+additionally returns `secret_key` once, on a newly created database's
+first Data API key pair). Three new tools cover the sherbase Data API
+this release ships: `base_rotate_secret`, `base_enable_api`, and
+`base_reload_schema` — see [Data API](#data-api). Every 0.3.x call keeps
+working unchanged.
 
-**Renamed tools:**
+## Migrating from 0.4.0
 
-| Old (0.1.x) | New (0.2.0) |
+0.5.0 removes the one-release aliases 0.2.0 and 0.4.0 introduced. Nothing
+here was renamed or changed shape — these names simply stop working.
+Update any already-configured agent before upgrading.
+
+**Removed tools** (registered but undocumented since 0.2.0/0.4.0 — call
+the tool in the "Use instead" column):
+
+| Removed | Use instead |
 | --- | --- |
 | `app_create` | `project_create` |
 | `app_list` | `project_list` |
@@ -235,59 +273,19 @@ mid-upgrade; update to the new names when convenient.
 | `base_create_project` | `base_create_database` |
 | `base_drop_project` | `base_drop_database` |
 
-**Renamed arguments:**
+**Removed arguments:**
 
-- `base_run_sql`'s first argument is renamed `slug` → `database`. The old
-  `slug` name still works if you pass it instead.
-- `app_assign`/`app_unassign`'s `app_id` argument is renamed `id` on the
-  new `project_assign`/`project_unassign` tools; the old alias tools keep
-  accepting `app_id`.
-- `key_create_app`'s old `app_id` (a Project id) argument still works for
-  one release; prefer its new `project` (a Project slug) argument. Passing
-  both and naming different projects is a `400`.
+- `base_run_sql`'s deprecated `slug` argument alias is gone — pass
+  `database` (now required).
+- `key_create_app`'s deprecated `app_id` (a Project id) argument is gone —
+  pass `project` (a Project slug). The underlying `POST
+  /api/platform/v1/keys` route now 400s `invalid_body` if `app_id` is
+  present in the request body at all.
 
-**New:** every resource tool (`sherpage_*`, `store_*`, `link_*`,
-`base_list_databases`, `base_create_database`) gained an optional
-`project` argument (a Project slug) to act on a Project other than your
-key's home Project, where the underlying platform route supports it.
-`key_create_app` gained an optional `project` argument for the same
-reason. `project_grant_key` and `project_revoke_grant` are new.
-
-**Alias window:** the old `app_*` and `base_list_projects`/
-`base_create_project`/`base_drop_project` names are registered and fully
-callable through 0.2.0, but are no longer documented here or in
-`skills/shebang/SKILL.md` — treat them as deprecated and migrate off them
-before the next release removes them.
-
-## Migrating from 0.2.x
-
-0.3.0 is an internal refactor — no tool was renamed, added, or removed, no
-argument or result-text changed. Tool registration moved out of
-`src/index.js` into `src/tools.js` (`registerTools(server, apiClient)`),
-and the five near-identical per-service fetch wrappers `index.js` used to
-carry collapsed into one client, `src/api-client.js`
-(`createApiClient({ apiKey, baseUrl })`). `src/index.js` is now a thin
-stdio entry point that resolves the API key/base URL exactly as before
-(env vars, legacy `SHERPAGE_API_KEY` alias, `~/.config/shebang/credentials.json`)
-and wires the two together. Nothing here changes how you install, log in,
-or call this server — it's the same npx command, the same env vars, the
-same 47 tools.
-
-This split is what lets `shebang-mcp` also power a hosted MCP server at
-`https://api.shebang.pro/mcp` — OAuth-authenticated, zero local config —
-alongside this unchanged `SHEBANG_API_KEY`-based stdio server, which
-remains the right choice for local agents and CI.
-
-## Migrating from 0.3.x
-
-0.4.0 is additive — no tool was renamed or removed. `base_list_databases`
-and `base_create_database` gain `api_url`, `publishable_key`, and
-`api_enabled` fields on every database they return (`base_create_database`
-additionally returns `secret_key` once, on a newly created database's
-first Data API key pair). Three new tools cover the sherbase Data API
-this release ships: `base_rotate_secret`, `base_enable_api`, and
-`base_reload_schema` — see [Data API](#data-api). Every 0.3.x call keeps
-working unchanged.
+**Removed response field:** `base_list_databases`'s result (and the
+underlying `GET .../databases` routes) no longer carry the duplicate
+`projects` key — read `databases`, which has carried the identical array
+since 0.2.0.
 
 ## Hosted MCP
 

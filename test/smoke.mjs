@@ -124,7 +124,7 @@ test("link_list — GET /api/sherlink/v1/links, auth header pass-through", async
 });
 
 test("base_list_databases — GET /api/sherbase/v1/databases, auth header pass-through", async () => {
-  const { client, calls, teardown } = await setup({ "GET /api/sherbase/v1/databases": { projects: [] } });
+  const { client, calls, teardown } = await setup({ "GET /api/sherbase/v1/databases": { databases: [] } });
   try {
     const result = await client.callTool({ name: "base_list_databases", arguments: {} });
     assert.equal(result.isError, undefined);
@@ -173,22 +173,26 @@ test("email_send — POST /api/platform/v1/email, auth header pass-through, stub
   }
 });
 
-test("app_list — hidden alias for project_list, reaches the same handler", async () => {
-  const { client, calls, teardown } = await setup({ "GET /api/platform/v1/projects": { projects: [] } });
+// 0.5.0 (Stage 21, Task 4): the Stage 17/19 one-release aliases (app_*,
+// base_*_project, key_create_app's app_id, base_run_sql's slug) are gone
+// outright, not redirected/delegated — app_list is now simply an unknown
+// tool to the server, exactly like any name that was never registered.
+test("app_list — removed in 0.5.0, now an unknown tool", async () => {
+  const { client, teardown } = await setup();
   try {
     const result = await client.callTool({ name: "app_list", arguments: {} });
-    assert.equal(result.isError, undefined);
-    assertSingleCall(calls, "GET", "/api/platform/v1/projects");
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /not found/i);
   } finally {
     await teardown();
   }
 });
 
-test("registerTools defaults to localFilesystem: true — store_upload_file present, store_upload_content absent, stdio's 50 tools (47 + base_rotate_secret/base_enable_api/base_reload_schema)", async () => {
+test("registerTools defaults to localFilesystem: true — store_upload_file present, store_upload_content absent, stdio's 39 tools (0.5.0, after Stage 21 Task 4 dropped the 11 app_*/base_*_project aliases)", async () => {
   const { client, teardown } = await setup();
   try {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 50);
+    assert.equal(tools.length, 39);
     const names = tools.map((t) => t.name);
     assert.ok(names.includes("store_upload_file"), "store_upload_file must remain registered for the stdio server");
     assert.ok(!names.includes("store_upload_content"), "store_upload_content is hosted-only, must not appear by default");
@@ -197,11 +201,11 @@ test("registerTools defaults to localFilesystem: true — store_upload_file pres
   }
 });
 
-test("registerTools({ localFilesystem: false }) — store_upload_file absent, store_upload_content present, still 50 tools total", async () => {
+test("registerTools({ localFilesystem: false }) — store_upload_file absent, store_upload_content present, still 39 tools total", async () => {
   const { client, teardown } = await setup({}, { localFilesystem: false });
   try {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 50);
+    assert.equal(tools.length, 39);
     const names = tools.map((t) => t.name);
     assert.ok(!names.includes("store_upload_file"), "store_upload_file must never be reachable in hosted mode (no disk access)");
     assert.ok(names.includes("store_upload_content"));

@@ -14,7 +14,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_BASE_URL = "https://dash.shebang.pro";
 const CREDENTIALS_PATH = join(homedir(), ".config", "shebang", "credentials.json");
-const POLL_INTERVAL_MS = 3000;
+const DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
+const DEFAULT_POLL_INTERVAL_MS = 3000; // used only if the server's response omits `interval`
 const POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes, matches the server-side code lifetime
 
 function baseUrlFromArgsOrEnv(args) {
@@ -104,77 +105,122 @@ async function cmdLogin(args) {
 
   let started;
   try {
-    started = await postJson(`${baseUrl}/api/agent-login/start`, { device_name: deviceName });
+    started = await postJson(`${baseUrl}/api/agent-login/device_authorization`, { client_name: deviceName });
   } catch (err) {
     console.error(`Could not reach ${baseUrl}: ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
     return;
   }
-  if (!started.ok || !started.data || typeof started.data.code !== "string") {
+  if (
+    !started.ok ||
+    !started.data ||
+    typeof started.data.device_code !== "string" ||
+    typeof started.data.user_code !== "string" ||
+    typeof started.data.verification_uri_complete !== "string"
+  ) {
     console.error(`Login could not start: ${started.data?.error ?? `HTTP ${started.status}`}`);
     process.exitCode = 1;
     return;
   }
 
-  const { code, poll_secret: pollSecret, verify_url: verifyUrl } = started.data;
+  const { device_code: deviceCode, user_code: userCode, verification_uri_complete: verificationUriComplete } = started.data;
+
+  // The server's own `interval` (RFC 8628 §3.2) is the poll cadence to
+  // start at; a missing/malformed value falls back to the pre-device-flow
+  // default rather than failing the whole login.
+  let pollIntervalMs =
+    typeof started.data.interval === "number" && started.data.interval > 0
+      ? started.data.interval * 1000
+      : DEFAULT_POLL_INTERVAL_MS;
 
   console.log("");
   console.log("  Confirm this code in your browser:");
   console.log("");
-  console.log(`    ${code.split("").join(" ")}`);
+  console.log(`    ${userCode.split("").join(" ")}`);
   console.log("");
-  console.log(`  ${verifyUrl}`);
+  console.log(`  ${verificationUriComplete}`);
   console.log("");
   console.log("Opening your browser… (if nothing opens, visit the URL above)");
-  tryOpenBrowser(verifyUrl);
+  tryOpenBrowser(verificationUriComplete);
 
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   process.stdout.write("Waiting for approval");
   while (Date.now() < deadline) {
-    await sleep(POLL_INTERVAL_MS);
+    await sleep(pollIntervalMs);
     let polled;
     try {
-      polled = await postJson(`${baseUrl}/api/agent-login/poll`, { code, poll_secret: pollSecret });
+      polled = await postJson(`${baseUrl}/api/agent-login/token`, {
+        grant_type: DEVICE_GRANT_TYPE,
+        device_code: deviceCode,
+      });
     } catch {
       process.stdout.write("x");
       continue;
     }
-    if (!polled.ok || !polled.data || typeof polled.data.status !== "string") {
-      process.stdout.write("x");
-      continue;
-    }
 
-    const status = polled.data.status;
-    if (status === "pending") {
-      process.stdout.write(".");
-      continue;
-    }
-    console.log("");
-    if (status === "approved") {
-      const apiKey = polled.data.api_key;
-      if (typeof apiKey !== "string" || apiKey.length === 0) {
-        console.error("Server said approved but returned no key. Try `shebang-mcp login` again.");
+    if (polled.status === 200 && polled.data && typeof polled.data.access_token === "string") {
+      console.log("");
+      const apiKey = polled.data.access_token;
+      try {
+        writeCredentialsFile(apiKey, baseUrl);
+      } catch (err) {
+        // The key was successfully minted server-side and delivered to this
+        // poll -- it is NOT recoverable by polling again (claimDeviceCode is
+        // exactly-once, see lib/agentkeys/login.ts). So a failure to save it
+        // locally must not silently drop it: print it in full, exactly once,
+        // along with the path we meant to save it to and how to use it
+        // without that file, then exit 1 rather than pretending login
+        // succeeded the normal way.
+        console.error(`Could not save credentials to ${CREDENTIALS_PATH}: ${err instanceof Error ? err.message : String(err)}`);
+        console.log(`Your key (shown once -- save it now): ${apiKey}`);
+        console.log(`Set SHEBANG_API_KEY=<key> in your environment to use it without a saved credentials file.`);
         process.exitCode = 1;
         return;
       }
-      writeCredentialsFile(apiKey, baseUrl);
       console.log(`Logged in. Key: ${keyPrefix(apiKey)} (master)`);
       console.log(`Saved to ${CREDENTIALS_PATH}`);
       console.log("");
       console.log("Your agent can now use shebang.");
       return;
     }
-    if (status === "denied") {
+
+    // Anything else is RFC 8628's error-shaped 400 body: {error, ...}. A
+    // response that's neither a 200 access_token nor a parseable `error`
+    // string is treated as a transient glitch (same as a network error
+    // above), not a fatal one -- keeps the CLI resilient to a flaky
+    // connection the same way the pre-device-flow version was.
+    const error = polled.data && typeof polled.data.error === "string" ? polled.data.error : null;
+    if (error === null) {
+      process.stdout.write("x");
+      continue;
+    }
+
+    if (error === "authorization_pending") {
+      process.stdout.write(".");
+      continue;
+    }
+    if (error === "slow_down") {
+      // RFC 8628 §3.5: the server's own returned `interval` is the new
+      // floor; fall back to a flat +5s bump (the RFC's own minimum) only
+      // if it's missing.
+      const nextInterval = typeof polled.data.interval === "number" && polled.data.interval > 0 ? polled.data.interval * 1000 : pollIntervalMs + 5000;
+      pollIntervalMs = nextInterval;
+      process.stdout.write(".");
+      continue;
+    }
+
+    console.log("");
+    if (error === "access_denied") {
       console.error("Login was denied in the browser. Run `shebang-mcp login` again if this wasn't intentional.");
       process.exitCode = 1;
       return;
     }
-    if (status === "expired" || status === "claimed_already") {
+    if (error === "expired_token" || error === "invalid_grant") {
       console.error("This login code expired or was already used. Run `shebang-mcp login` again.");
       process.exitCode = 1;
       return;
     }
-    console.error(`Unexpected status from server: ${status}`);
+    console.error(`Unexpected error from server: ${error}`);
     process.exitCode = 1;
     return;
   }
@@ -299,4 +345,12 @@ async function main() {
   }
 }
 
-main();
+main().catch((err) => {
+  // Belt-and-suspenders: every command above handles its own expected
+  // failure modes internally (network errors, bad responses, unwritable
+  // credentials file), but an unanticipated throw should still exit 1
+  // with a message instead of surfacing as an unhandled rejection stack
+  // trace.
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exitCode = 1;
+});
