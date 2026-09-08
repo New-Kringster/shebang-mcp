@@ -1,6 +1,6 @@
 {
   "name": "shebang-mcp",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "Stdio MCP server + CLI for shebang: pages, files, short links, Postgres databases, and OAuth/keys over one federated API. Public client for accounts on shebang.pro.",
   "type": "module",
   "license": "MIT",

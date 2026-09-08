@@ -4,6 +4,11 @@ One MCP server and CLI for hosting pages, sharing files, making short links,
 running a Postgres database, and managing API keys — all through a single
 `shb_…` key, for accounts on [shebang.pro](https://shebang.pro).
 
+Full docs live at [docs.shebang.pro](https://docs.shebang.pro), with an
+agent-oriented index at
+[docs.shebang.pro/llms.txt](https://docs.shebang.pro/llms.txt) — and every
+page there is also available as plain Markdown at `<page-url>.md`.
+
 ## Quickstart
 
 **Claude Code:**

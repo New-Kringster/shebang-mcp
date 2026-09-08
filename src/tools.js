@@ -92,7 +92,9 @@ async function resolveProjectId(apiClient, slugOrId) {
  * allow-list in apps/dash/src/lib/sherserve/contentType.ts closely enough
  * to cover the common cases client-side, so a caller relying on
  * `contentType` alone still gets a working upload instead of a network
- * round trip just to fail.
+ * round trip just to fail. Deliberately has no `text/html` entry: sherserve
+ * never hosts HTML (that allow-list has no `html` extension either) --
+ * HTML pages belong to `sherpage_publish` instead.
  */
 const UPLOAD_EXTENSION_BY_CONTENT_TYPE = {
   "image/png": "png",
@@ -101,7 +103,6 @@ const UPLOAD_EXTENSION_BY_CONTENT_TYPE = {
   "image/webp": "webp",
   "image/svg+xml": "svg",
   "text/plain": "txt",
-  "text/html": "html",
   "application/json": "json",
   "application/pdf": "pdf",
   "video/mp4": "mp4",

@@ -393,6 +393,87 @@ test("store_upload_content — no extension anywhere and an unrecognized content
   }
 });
 
+// docs fix round 3: UPLOAD_EXTENSION_BY_CONTENT_TYPE (tools.js) must never
+// map text/html -- sherserve's allow-list (apps/dash/src/lib/sherserve/
+// contentType.ts's CONTENT_TYPES) deliberately has no `html` extension,
+// since HTML is hosted by sherpage_publish, not sherserve. The map isn't
+// exported, so these tests drive it indirectly through store_upload_content
+// (extensionless slug + contentType, no `path`), reading the inferred
+// filename's extension off the multipart file the tool actually sent.
+
+// Extensions from apps/dash/src/lib/sherserve/contentType.ts's
+// CONTENT_TYPES allow-list, hard-coded here (not imported) so this test
+// fails if that file's allow-list and tools.js's client-side map drift
+// apart without both being updated deliberately.
+const SHERSERVE_ALLOWED_EXTENSIONS = [
+  "png", "jpg", "jpeg", "gif", "webp", "svg", "avif",
+  "mp4", "webm", "mov", "m4v",
+  "mp3", "wav", "ogg",
+  "pdf", "txt", "csv", "json", "md",
+  "zip", "gz", "tar",
+];
+
+test("store_upload_content — text/html is not a recognized contentType (sherserve never hosts HTML)", async () => {
+  const { client, calls, teardown } = await setup({}, { localFilesystem: false });
+  try {
+    const result = await client.callTool({
+      name: "store_upload_content",
+      arguments: { slug: "mystery-page", contentBase64: Buffer.from("<p>hi</p>").toString("base64"), contentType: "text/html" },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /path "mystery-page" has no file extension/);
+    const recognizedList = result.content[0].text.split("use one of: ")[1] ?? "";
+    assert.ok(recognizedList.length > 0, "expected a recognized-types list in the error message");
+    assert.doesNotMatch(
+      recognizedList,
+      /text\/html/,
+      "text/html must not appear among the recognized content types",
+    );
+    assert.equal(calls.length, 0, "an unrecognized text/html must reject before any HTTP call");
+  } finally {
+    await teardown();
+  }
+});
+
+test("store_upload_content — every remaining UPLOAD_EXTENSION_BY_CONTENT_TYPE entry infers an extension on sherserve's allow-list", async () => {
+  // One content type per remaining map entry (tools.js), each driven
+  // through an extensionless slug so the inferred extension is visible on
+  // the outgoing multipart filename.
+  const CONTENT_TYPES_UNDER_TEST = [
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml",
+    "text/plain", "application/json", "application/pdf",
+    "video/mp4", "audio/mpeg",
+  ];
+  for (const contentType of CONTENT_TYPES_UNDER_TEST) {
+    const slug = "asset-no-extension";
+    const { client, calls, teardown } = await setup(
+      {
+        "POST /api/sherserve/v1/objects": {
+          object: { id: "o", title: "upload", slug, access: "private", sizeBytes: 3 },
+          url: "https://f.shebang.pro/asset-no-extension",
+        },
+      },
+      { localFilesystem: false },
+    );
+    try {
+      const result = await client.callTool({
+        name: "store_upload_content",
+        arguments: { slug, contentBase64: Buffer.from("abc").toString("base64"), contentType },
+      });
+      assert.equal(result.isError, undefined, `${contentType} should resolve to a supported extension`);
+      const file = calls[0].body.get("file");
+      const extension = file.name.split(".").pop();
+      assert.notEqual(extension, "html", `${contentType} must never infer .html`);
+      assert.ok(
+        SHERSERVE_ALLOWED_EXTENSIONS.includes(extension),
+        `${contentType} inferred ".${extension}", which is not on sherserve's allow-list`,
+      );
+    } finally {
+      await teardown();
+    }
+  }
+});
+
 test("sherpage_delete — confirm-guard rejection never calls the client", async () => {
   const { client, calls, teardown } = await setup({});
   try {

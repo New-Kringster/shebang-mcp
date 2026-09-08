@@ -12,6 +12,11 @@ managing its own **identity** (API keys, OAuth clients). All of it is
 reachable through the `shebang-mcp` server's tools — no separate accounts,
 no separate SDKs.
 
+Full docs, for anything this file doesn't cover in enough depth, are at
+https://docs.shebang.pro — including an agent-oriented index at
+https://docs.shebang.pro/llms.txt, and every page there fetchable as
+plain Markdown at `<page-url>.md` instead of rendered HTML.
+
 ## Login-if-401
 
 Every tool call in this server needs an `shb_…` API key. If a tool call
