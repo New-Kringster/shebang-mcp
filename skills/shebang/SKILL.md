@@ -1,6 +1,6 @@
 ---
 name: shebang
-description: Use whenever an agent needs to host a web page, share a file with someone, spin up a Postgres database, create a short link, or manage its own API keys — via the shebang MCP server. Triggers on "host a page", "publish this as a page", "share this file", "give me a link to this file", "make a short link", "create a database", "run SQL against my database", "mint an API key for a sub-agent", "shebang", "sherpage", "sherbase", "sherserve", "sherlink", or any 401/missing-API-key error from a shebang_/sherpage_/store_/base_/link_/key_/oauth_ tool call (run `npx -y github:New-Kringster/shebang-mcp login` to fix it).
+description: Use whenever an agent needs to host a web page, share a file with someone, spin up a Postgres database, create a short link, or manage its own API keys — via the shebang MCP server. Triggers on "host a page", "publish this as a page", "share this file", "give me a link to this file", "make a short link", "create a database", "run SQL against my database", "mint an API key for a sub-agent", "shebang", "sherpage", "sherbase", "sherserve", "sherlink", or any 401/missing-API-key error from a shebang_/sherpage_/store_/base_/link_/key_/oauth_ tool call (run `npx -y shebang-mcp login` to fix it).
 ---
 
 # shebang
@@ -23,7 +23,7 @@ Every tool call in this server needs an `shb_…` API key. If a tool call
 fails with something like "missing API key" or `401`/`invalid_api_key`, run:
 
 ```
-npx -y github:New-Kringster/shebang-mcp login
+npx -y shebang-mcp login
 ```
 
 This starts a device-login flow: it prints a code and a URL, tries to open

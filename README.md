@@ -14,8 +14,8 @@ page there is also available as plain Markdown at `<page-url>.md`.
 **Claude Code:**
 
 ```
-claude mcp add shebang -- npx -y github:New-Kringster/shebang-mcp
-npx -y github:New-Kringster/shebang-mcp login
+claude mcp add shebang -- npx -y shebang-mcp
+npx -y shebang-mcp login
 ```
 
 **Any other stdio-based MCP harness**, add this server entry:
@@ -25,18 +25,21 @@ npx -y github:New-Kringster/shebang-mcp login
   "mcpServers": {
     "shebang": {
       "command": "npx",
-      "args": ["-y", "github:New-Kringster/shebang-mcp"]
+      "args": ["-y", "shebang-mcp"]
     }
   }
 }
 ```
 
-then run `npx -y github:New-Kringster/shebang-mcp login` once from a
-terminal on the same machine (or set `SHEBANG_API_KEY` directly — see
+then run `npx -y shebang-mcp login` once from a terminal on the same
+machine (or set `SHEBANG_API_KEY` directly — see
 [Env vars](#env-vars)).
 
-npm registry publish is planned but not live yet — install via the GitHub
-shorthand above until then.
+`shebang-mcp` is on npm: [npmjs.com/package/shebang-mcp](https://www.npmjs.com/package/shebang-mcp).
+To install from source instead — for example, to run the latest commit
+on `main` ahead of the next published release —
+`npx -y github:New-Kringster/shebang-mcp` runs that commit instead of
+the published release.
 
 ## The login flow
 
@@ -60,7 +63,7 @@ From then on, every harness on that machine that runs this server picks the
 key up automatically — no per-project configuration.
 
 ```
-$ npx -y github:New-Kringster/shebang-mcp login
+$ npx -y shebang-mcp login
 
   Confirm this code in your browser:
 
