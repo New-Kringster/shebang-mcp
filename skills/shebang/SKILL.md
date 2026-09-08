@@ -121,6 +121,15 @@ then `verifyOtp({ email, token: "<6-digit code>", type: "signup" })`
 The app owner's own shebang.pro account is entirely separate from these
 end users.
 
+Your app can also sign users in **by redirect** instead of an embedded
+form: send them to sherlock's authorize URL (PKCE, S256 only, scope
+`openid email profile`), handle the callback, exchange the code for
+tokens (form-encoded), and use the returned `access_token` — a sherlock
+user JWT — as `Authorization: Bearer <access_token>` against both the
+Data API and `api.shebang.pro`, and `refresh_token` to renew it. Register
+a client first, either via dynamic registration against
+`<issuer>/oauth/clients/register` or the `oauth_create_client` tool.
+
 **Projects** (`platform` — dashboard organization and access control; see
 above) — `project_create`, `project_list`, `project_get`, `project_set`,
 `project_resources`, `project_delete`, `project_assign`,

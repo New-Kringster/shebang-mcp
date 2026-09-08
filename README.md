@@ -104,6 +104,9 @@ the `key_revoke` tool) or from the shebang.pro dashboard's account page.
 `shebang-mcp logout` only forgets the key locally; it prints this same
 reminder.
 
+On the wire, a `shb_…` key is sent as `Authorization: Bearer shb_...` —
+on the platform API directly, and by every tool in this MCP server.
+
 ## Tool reference
 
 **Pages** (`sherpage`)
@@ -258,6 +261,98 @@ await supabase.auth.signInWithPassword({ email, password });
 
 const { data, error } = await supabase.from("todos").select("*");
 ```
+
+### Sign in with sherlock (redirect)
+
+Use this when you want your app to send users to sherlock to sign in and
+get them back with tokens — no password form lives in your app, and a
+user already signed in to one shebang app is signed in to every other
+app on the same sherlock account.
+
+**1. Register a client.** Dynamic client registration, against the
+issuer's discovery document
+(`https://auth.shebang.pro/auth/v1/.well-known/openid-configuration`):
+
+```bash
+curl -X POST https://auth.shebang.pro/auth/v1/oauth/clients/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_name": "My app",
+    "redirect_uris": ["https://myapp.example.com/callback"],
+    "token_endpoint_auth_method": "none"
+  }'
+```
+
+`token_endpoint_auth_method: "none"` registers a **public** client (a
+browser app or CLI, with no secret to protect); use `"client_secret_post"`
+instead for a **confidential** client (a server that can hold one), and
+the response includes a `client_secret`. Or skip the curl and call the
+MCP `oauth_create_client` tool, which does the same registration.
+
+**2. Send the user to the authorize URL**, with a PKCE challenge (S256
+only — plain isn't supported) and a `state` you'll check on the way back:
+
+```
+https://auth.shebang.pro/auth/v1/oauth/authorize
+  ?response_type=code
+  &client_id=<client_id>
+  &redirect_uri=<redirect_uri>
+  &scope=openid email profile
+  &code_challenge=<S256 challenge>
+  &code_challenge_method=S256
+  &state=<random state>
+```
+
+The consent screen the user sees names your app and lists these scopes.
+
+**3. Handle the callback** at your `redirect_uri` (`?code=...&state=...`),
+check `state` matches what you sent, then exchange the code for tokens
+(form-encoded):
+
+```bash
+curl -X POST https://auth.shebang.pro/auth/v1/oauth/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=authorization_code" \
+  --data-urlencode "code=<code>" \
+  --data-urlencode "redirect_uri=<redirect_uri>" \
+  --data-urlencode "client_id=<client_id>" \
+  --data-urlencode "code_verifier=<verifier>"
+```
+
+You get back `access_token`, `refresh_token`, and `id_token` (a JWT
+carrying the user's `email` and `sub`). The `access_token` is a sherlock
+user JWT (`aud: "authenticated"`) — pass it as a Bearer token to your
+database's Data API, or to `api.shebang.pro` (the platform API), and
+either accepts it as that signed-in user.
+
+**4. Use the access token with supabase-js**, so row-level security sees
+the signed-in user:
+
+```js
+const supabase = createClient(api_url, publishable_key, {
+  global: { headers: { Authorization: `Bearer ${access_token}` } },
+});
+```
+
+**5. Refresh** when the access token expires:
+
+```bash
+curl -X POST https://auth.shebang.pro/auth/v1/oauth/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=refresh_token" \
+  --data-urlencode "refresh_token=<refresh_token>" \
+  --data-urlencode "client_id=<client_id>"
+```
+
+**6. Log out** by dropping the tokens client-side; sherlock sessions end
+with sign-out-everywhere, not a per-app revoke.
+
+This is an alternative to the embedded-form flow — signing in directly
+via `supabase-js` calls like `signInWithPassword`, or `signUp`/
+`verifyOtp` (see above, and Sign-up for your app's users below). Pick
+redirect for one account shared across apps with no password handling
+in your own code; pick embedded when you want the sign-in form itself
+to live inside your app's UI.
 
 ### Sign-up for your app's users
 
